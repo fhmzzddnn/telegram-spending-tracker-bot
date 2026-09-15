@@ -13,10 +13,18 @@ const AddExpenseSchema = z.object({
 const GetSummarySchema = z.object({
   action: z.literal('GET_SUMMARY'),
   period: z.enum(['today', 'this_week', 'this_month', 'all']),
+  targetSpender: z.string().optional(),
 });
 
 const DeleteLastExpenseSchema = z.object({
   action: z.literal('DELETE_LAST_EXPENSE'),
+});
+
+const EditLastExpenseSchema = z.object({
+  action: z.literal('EDIT_LAST_EXPENSE'),
+  newAmount: z.number().positive().optional(),
+  newCategory: z.string().min(1).optional(),
+  newDescription: z.string().min(1).optional(),
 });
 
 const HelpSchema = z.object({
@@ -32,6 +40,7 @@ const IntentSchema = z.discriminatedUnion('action', [
   AddExpenseSchema,
   GetSummarySchema,
   DeleteLastExpenseSchema,
+  EditLastExpenseSchema,
   HelpSchema,
   UnknownSchema,
 ]);
@@ -62,14 +71,31 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
    - Ekstrak "description" berupa ringkasan barang/layanan/keperluan yang dibeli.
    - Ekstrak "date" (format YYYY-MM-DD) jika pengguna menyebutkan waktu tertentu (contoh: "kemarin", "hari senin", "tadi pagi").
 
-2. "GET_SUMMARY": Ketika pengguna meminta ringkasan, rekap, atau total pengeluaran (contoh: "pengeluaran hari ini", "habis berapa minggu ini?", "rekap bulan ini", "total semua pengeluaran").
+2. "GET_SUMMARY": Ketika pengguna meminta ringkasan, rekap, atau total pengeluaran.
+   - Contoh input:
+     * "pengeluaran hari ini" -> period: "today"
+     * "rekap minggu ini" -> period: "this_week"
+     * "pengeluaran Sarah minggu ini" -> period: "this_week", targetSpender: "Sarah"
+     * "cek pengeluaran Fahmi bulan ini" -> period: "this_month", targetSpender: "Fahmi"
+     * "total semua pengeluaran" -> period: "all", targetSpender: "all"
+     * "rekap gabungan minggu ini" -> period: "this_week", targetSpender: "all"
    - Ekstrak "period": "today" (hari ini), "this_week" (minggu ini), "this_month" (bulan ini), atau "all" (semua). Default ke "this_month" jika tidak disebutkan.
+   - Ekstrak "targetSpender": jika pengguna secara spesifik menyebutkan nama seseorang (contoh: "Sarah", "Fahmi") atau kata "semua" / "gabungan". Jika pengguna hanya bertanya secara umum ("habis berapa hari ini"), kosongkan targetSpender.
 
-3. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo transaksi terakhir (contoh: "hapus transaksi terakhir", "undo", "batalin yang tadi", "delete last").
+3. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo transaksi terakhir miliknya sendiri (contoh: "hapus transaksi terakhir", "undo", "batalin yang tadi", "delete last").
 
-4. "HELP": Ketika pengguna menanyakan cara pakai, bantuan, atau perintah "/help" / "/start".
+4. "EDIT_LAST_EXPENSE": Ketika pengguna ingin mengoreksi, merevisi, atau mengedit data pengeluaran terakhir miliknya yang baru saja dicatat.
+   - Contoh input:
+     * "eh salah harganya 20rb bukan 15rb" -> action: EDIT_LAST_EXPENSE, newAmount: 20000
+     * "koreksi tadi jadi 35k" -> action: EDIT_LAST_EXPENSE, newAmount: 35000
+     * "ganti kategori transaksi tadi jadi Transportasi" -> action: EDIT_LAST_EXPENSE, newCategory: "Transportasi"
+     * "ubah catatannya jadi nasi uduk" -> action: EDIT_LAST_EXPENSE, newDescription: "nasi uduk"
+     * "yang tadi buat bayar bensin 50rb" -> action: EDIT_LAST_EXPENSE, newAmount: 50000, newDescription: "bayar bensin", newCategory: "Transportasi"
+   - Ekstrak "newAmount" (number positif), "newCategory" (string), dan/atau "newDescription" (string) sesuai apa yang ingin diperbarui.
 
-5. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
+5. "HELP": Ketika pengguna menanyakan cara pakai, bantuan, atau perintah "/help" / "/start".
+
+6. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
    - Berikan "message" dalam bahasa Indonesia yang ramah dan membantu.
 
 Konteks tanggal hari ini: ${new Date().toISOString().split('T')[0]}.
@@ -89,7 +115,7 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
           action: {
             type: SchemaType.STRING,
             format: 'enum',
-            enum: ['ADD_EXPENSE', 'GET_SUMMARY', 'DELETE_LAST_EXPENSE', 'HELP', 'UNKNOWN'],
+            enum: ['ADD_EXPENSE', 'GET_SUMMARY', 'DELETE_LAST_EXPENSE', 'EDIT_LAST_EXPENSE', 'HELP', 'UNKNOWN'],
           },
           amount: { type: SchemaType.NUMBER },
           category: { type: SchemaType.STRING },
@@ -100,6 +126,10 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
             format: 'enum',
             enum: ['today', 'this_week', 'this_month', 'all'],
           },
+          targetSpender: { type: SchemaType.STRING },
+          newAmount: { type: SchemaType.NUMBER },
+          newCategory: { type: SchemaType.STRING },
+          newDescription: { type: SchemaType.STRING },
           message: { type: SchemaType.STRING },
         },
         required: ['action'],

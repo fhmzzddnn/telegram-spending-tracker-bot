@@ -115,9 +115,9 @@ export async function appendExpenseRecord(record: ExpenseRecord): Promise<void> 
 }
 
 /**
- * Deletes the most recent expense row (the last non-header row)
+ * Deletes the most recent expense row for a specific spender
  */
-export async function deleteLastExpenseRecord(): Promise<{ success: boolean; deletedDescription?: string }> {
+export async function deleteLastExpenseRecord(spender?: string): Promise<{ success: boolean; deletedDescription?: string }> {
   const sheets = getSheetsClient();
   const spreadsheetId = getSpreadsheetId();
 
@@ -139,8 +139,21 @@ export async function deleteLastExpenseRecord(): Promise<{ success: boolean; del
     return { success: false };
   }
 
-  const lastRowIndex = rows.length - 1; // 0-indexed
-  const lastRowData = rows[lastRowIndex];
+  // Find the last row belonging to this specific spender (or absolute last row if spender is omitted)
+  let targetRowIndex = -1;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const rowSpender = String(rows[i][1] || '').trim().toLowerCase();
+    if (!spender || rowSpender === spender.trim().toLowerCase() || rowSpender.includes(spender.trim().toLowerCase())) {
+      targetRowIndex = i;
+      break;
+    }
+  }
+
+  if (targetRowIndex === -1) {
+    return { success: false };
+  }
+
+  const lastRowData = rows[targetRowIndex];
   const formattedAmt = isNaN(Number(lastRowData[3])) ? lastRowData[3] : `Rp ${Number(lastRowData[3]).toLocaleString('id-ID')}`;
   const deletedDescription = `${lastRowData[1]} (${lastRowData[2]} - ${formattedAmt}: ${lastRowData[4]})`;
 
@@ -153,8 +166,8 @@ export async function deleteLastExpenseRecord(): Promise<{ success: boolean; del
             range: {
               sheetId,
               dimension: 'ROWS',
-              startIndex: lastRowIndex,
-              endIndex: lastRowIndex + 1,
+              startIndex: targetRowIndex,
+              endIndex: targetRowIndex + 1,
             },
           },
         },
@@ -166,9 +179,97 @@ export async function deleteLastExpenseRecord(): Promise<{ success: boolean; del
 }
 
 /**
- * Computes expense summary for a given period
+ * Updates the most recent expense record for a specific spender with new values
  */
-export async function getExpensesSummary(period: 'today' | 'this_week' | 'this_month' | 'all'): Promise<SummaryResult> {
+export async function updateLastExpenseRecord(
+  spender: string,
+  updates: {
+    newAmount?: number;
+    newCategory?: string;
+    newDescription?: string;
+  }
+): Promise<{
+  success: boolean;
+  oldRecord?: ExpenseRecord;
+  updatedRecord?: ExpenseRecord;
+}> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await ensureSheetInitialized();
+
+  const data = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${SHEET_NAME}!A:F`,
+  });
+
+  const rows = data.data.values;
+  if (!rows || rows.length <= 1) {
+    return { success: false };
+  }
+
+  // Find the last row belonging to this specific spender
+  let targetRowIndex = -1;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const rowSpender = String(rows[i][1] || '').trim().toLowerCase();
+    if (rowSpender === spender.trim().toLowerCase() || rowSpender.includes(spender.trim().toLowerCase())) {
+      targetRowIndex = i;
+      break;
+    }
+  }
+
+  if (targetRowIndex === -1) {
+    return { success: false };
+  }
+
+  const rowNumber = targetRowIndex + 1; // 1-indexed row number in Google Sheets
+  const lastRowData = rows[targetRowIndex];
+
+  const oldRecord: ExpenseRecord = {
+    date: String(lastRowData[0] || ''),
+    spender: String(lastRowData[1] || ''),
+    category: String(lastRowData[2] || ''),
+    amount: Number(lastRowData[3]) || 0,
+    description: String(lastRowData[4] || ''),
+    rawText: String(lastRowData[5] || ''),
+  };
+
+  const updatedRecord: ExpenseRecord = {
+    date: oldRecord.date,
+    spender: oldRecord.spender,
+    category: updates.newCategory || oldRecord.category,
+    amount: updates.newAmount !== undefined ? updates.newAmount : oldRecord.amount,
+    description: updates.newDescription || oldRecord.description,
+    rawText: `[Diedit] ${oldRecord.rawText}`,
+  };
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${SHEET_NAME}!A${rowNumber}:F${rowNumber}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: {
+      values: [[
+        updatedRecord.date,
+        updatedRecord.spender,
+        updatedRecord.category,
+        updatedRecord.amount,
+        updatedRecord.description,
+        updatedRecord.rawText,
+      ]],
+    },
+  });
+
+  return { success: true, oldRecord, updatedRecord };
+}
+
+/**
+ * Computes expense summary for a given period, optionally scoped to a target spender or caller
+ */
+export async function getExpensesSummary(
+  period: 'today' | 'this_week' | 'this_month' | 'all',
+  targetSpender?: string,
+  callerSpender?: string
+): Promise<SummaryResult> {
   const sheets = getSheetsClient();
   const spreadsheetId = getSpreadsheetId();
 
@@ -191,9 +292,16 @@ export async function getExpensesSummary(period: 'today' | 'this_week' | 'this_m
   let total = 0;
   let count = 0;
   const byCategory: Record<string, number> = {};
+  const bySpender: Record<string, number> = {};
+
+  // Determine spender filter
+  const isAll = targetSpender === 'all';
+  const filterName = isAll ? undefined : (targetSpender || callerSpender);
+  const spenderLabel = isAll ? 'Semua Pengguna' : (filterName || 'Anda');
 
   for (const row of rows) {
     const dateStr = row[0] as string;
+    const rowSpender = (row[1] as string) || 'User';
     const category = (row[2] as string) || 'Lainnya';
     const amount = parseFloat(String(row[3]).replace(/[^0-9.-]+/g, '')) || 0;
 
@@ -202,28 +310,39 @@ export async function getExpensesSummary(period: 'today' | 'this_week' | 'this_m
       continue;
     }
 
-    let include = false;
+    // Timeframe filter
+    let includeTime = false;
     if (period === 'all') {
-      include = true;
+      includeTime = true;
     } else if (period === 'today' && entryDate >= startOfDay) {
-      include = true;
+      includeTime = true;
     } else if (period === 'this_week' && entryDate >= startOfWeek) {
-      include = true;
+      includeTime = true;
     } else if (period === 'this_month' && entryDate >= startOfMonth) {
-      include = true;
+      includeTime = true;
     }
 
-    if (include) {
-      total += amount;
-      count += 1;
-      byCategory[category] = (byCategory[category] || 0) + amount;
+    if (!includeTime) continue;
+
+    // Spender filter
+    if (filterName) {
+      const match = rowSpender.toLowerCase().includes(filterName.toLowerCase()) ||
+                    filterName.toLowerCase().includes(rowSpender.toLowerCase());
+      if (!match) continue;
     }
+
+    total += amount;
+    count += 1;
+    byCategory[category] = (byCategory[category] || 0) + amount;
+    bySpender[rowSpender] = (bySpender[rowSpender] || 0) + amount;
   }
 
   return {
     total,
     count,
     period,
+    spenderLabel,
     byCategory,
+    bySpender: isAll ? bySpender : undefined,
   };
 }

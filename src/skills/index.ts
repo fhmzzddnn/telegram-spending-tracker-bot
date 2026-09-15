@@ -3,6 +3,7 @@ import {
   appendExpenseRecord,
   getExpensesSummary,
   deleteLastExpenseRecord,
+  updateLastExpenseRecord,
 } from '../lib/sheets.js';
 
 function formatCurrency(amount: number): string {
@@ -53,7 +54,7 @@ export async function executeSkill(
     }
 
     case 'GET_SUMMARY': {
-      const summary = await getExpensesSummary(intent.period);
+      const summary = await getExpensesSummary(intent.period, intent.targetSpender, spender);
       const periodLabel = {
         today: 'Hari Ini',
         this_week: 'Minggu Ini',
@@ -62,13 +63,23 @@ export async function executeSkill(
       }[intent.period];
 
       if (summary.count === 0) {
-        return `📊 Ringkasan Pengeluaran (${periodLabel})\n\nBelum ada pengeluaran yang tercatat untuk periode ini.`;
+        return `📊 Ringkasan Pengeluaran ${summary.spenderLabel} (${periodLabel})\n\nBelum ada pengeluaran yang tercatat untuk periode ini.`;
       }
 
-      let text = `📊 Ringkasan Pengeluaran (${periodLabel})\n\n`;
+      let text = `📊 Ringkasan Pengeluaran ${summary.spenderLabel} (${periodLabel})\n\n`;
       text += `Total: ${formatCurrency(summary.total)} (${summary.count} transaksi)\n\n`;
-      text += `Rincian Kategori:\n`;
 
+      if (summary.bySpender && Object.keys(summary.bySpender).length > 1) {
+        text += `Rincian per Pengguna:\n`;
+        const sortedSpenders = Object.entries(summary.bySpender).sort(([, a], [, b]) => b - a);
+        for (const [name, amt] of sortedSpenders) {
+          const pct = ((amt / summary.total) * 100).toFixed(1);
+          text += `• ${name}: ${formatCurrency(amt)} (${pct}%)\n`;
+        }
+        text += `\n`;
+      }
+
+      text += `Rincian Kategori:\n`;
       const sortedCategories = Object.entries(summary.byCategory).sort(
         ([, a], [, b]) => b - a
       );
@@ -82,11 +93,32 @@ export async function executeSkill(
     }
 
     case 'DELETE_LAST_EXPENSE': {
-      const res = await deleteLastExpenseRecord();
+      const res = await deleteLastExpenseRecord(spender);
       if (!res.success) {
-        return `⚠️ Tidak ada data pengeluaran yang bisa dihapus.`;
+        return `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa dihapus.`;
       }
-      return `🗑️ Berhasil menghapus pengeluaran terakhir:\n${res.deletedDescription || 'Data transaksi'}`;
+      return `🗑️ Berhasil menghapus pengeluaran terakhir Anda:\n${res.deletedDescription || 'Data transaksi'}`;
+    }
+
+    case 'EDIT_LAST_EXPENSE': {
+      const res = await updateLastExpenseRecord(spender, {
+        newAmount: intent.newAmount,
+        newCategory: intent.newCategory,
+        newDescription: intent.newDescription,
+      });
+
+      if (!res.success || !res.updatedRecord) {
+        return `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa diedit.`;
+      }
+
+      return (
+        `✏️ Pengeluaran Terakhir Berhasil Diperbarui!\n\n` +
+        `👤 Pengeluar: ${res.updatedRecord.spender}\n` +
+        `💵 Jumlah: ${formatCurrency(res.updatedRecord.amount)}\n` +
+        `📂 Kategori: ${res.updatedRecord.category}\n` +
+        `📝 Catatan: ${res.updatedRecord.description}\n` +
+        `📅 Tanggal: ${res.updatedRecord.date.split(' ')[0]}`
+      );
     }
 
     case 'HELP': {
@@ -100,12 +132,16 @@ export async function executeSkill(
         `• "Bayar tagihan listrik 150 ribu"\n` +
         `• "Belanja bulanan 350k kemarin"\n` +
         `• "Grab 25rb"\n\n` +
+        `✏️ Edit / Koreksi Transaksi Sendiri:\n` +
+        `• "Eh salah harganya 20rb bukan 15rb"\n` +
+        `• "Koreksi tadi jadi 35k"\n` +
+        `• "Ganti kategori jadi Transportasi"\n` +
+        `• "Ubah catatannya jadi martabak manis"\n\n` +
         `📊 Cek Rekap Pengeluaran:\n` +
-        `• "Habis berapa hari ini?"\n` +
-        `• "Rekap minggu ini"\n` +
-        `• "Pengeluaran bulan ini"\n` +
-        `• "Total semua pengeluaran"\n\n` +
-        `🗑️ Batalkan Transaksi:\n` +
+        `• "Habis berapa hari ini?" (Pengeluaran sendiri)\n` +
+        `• "Pengeluaran Sarah minggu ini" (Cek orang lain)\n` +
+        `• "Rekap semua pengeluaran bulan ini" (Total gabungan)\n\n` +
+        `🗑️ Batalkan Transaksi Sendiri:\n` +
         `• "Hapus yang tadi"\n` +
         `• "Undo transaksi terakhir"\n`
       );

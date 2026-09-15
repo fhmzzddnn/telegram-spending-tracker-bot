@@ -5,15 +5,10 @@ dotenv.config();
 
 const testPhrases = [
   'beli nasi goreng 15rb di depan gang',
-  'kopi kenangan 28k',
-  'isi bensin motor 50rb',
-  'bayar tagihan listrik 150 ribu kemarin',
-  'belanja bulanan 1.5jt di superindo',
+  'eh salah harganya 20rb bukan 15rb',
+  'ganti kategori jadi Transportasi',
+  'ubah catatannya jadi nasi uduk komplit',
   'habis berapa hari ini?',
-  'rekap pengeluaran minggu ini',
-  'batalin yang tadi',
-  'hapus transaksi terakhir',
-  'bisa ngapain aja?',
 ];
 
 async function runTests() {

@@ -35,6 +35,7 @@ export type SkillAction =
   | 'ADD_EXPENSE'
   | 'GET_SUMMARY'
   | 'DELETE_LAST_EXPENSE'
+  | 'EDIT_LAST_EXPENSE'
   | 'HELP'
   | 'UNKNOWN';
 
@@ -49,10 +50,18 @@ export interface AddExpenseIntent {
 export interface GetSummaryIntent {
   action: 'GET_SUMMARY';
   period: 'today' | 'this_week' | 'this_month' | 'all';
+  targetSpender?: string; // Optional: name of the specific spender to check, or 'all'
 }
 
 export interface DeleteLastExpenseIntent {
   action: 'DELETE_LAST_EXPENSE';
+}
+
+export interface EditLastExpenseIntent {
+  action: 'EDIT_LAST_EXPENSE';
+  newAmount?: number;
+  newCategory?: string;
+  newDescription?: string;
 }
 
 export interface HelpIntent {
@@ -68,6 +77,7 @@ export type ParsedIntent =
   | AddExpenseIntent
   | GetSummaryIntent
   | DeleteLastExpenseIntent
+  | EditLastExpenseIntent
   | HelpIntent
   | UnknownIntent;
 
@@ -85,5 +95,7 @@ export interface SummaryResult {
   total: number;
   count: number;
   period: string;
+  spenderLabel: string;
   byCategory: Record<string, number>;
+  bySpender?: Record<string, number>;
 }
