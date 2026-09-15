@@ -99,3 +99,21 @@ export interface SummaryResult {
   byCategory: Record<string, number>;
   bySpender?: Record<string, number>;
 }
+
+export interface MonthlyUserSummary {
+  name: string;
+  monthYear: string; // mm-yyyy
+  amount: number;
+}
+
+export interface MonthlyCategorySummary {
+  category: string;
+  monthYear: string; // mm-yyyy
+  amount: number;
+}
+
+export interface RolloverResult {
+  rolledOver: boolean;
+  recordCount: number;
+  months: string[];
+}
