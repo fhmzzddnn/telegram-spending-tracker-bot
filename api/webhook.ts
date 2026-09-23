@@ -1,6 +1,6 @@
 import { parseUserIntent } from '../src/lib/gemini.js';
 import { executeSkill } from '../src/skills/index.js';
-import { sendTelegramMessage, sendTelegramTyping } from '../src/lib/telegram.js';
+import { sendTelegramMessage, sendTelegramTyping, notifyOtherAuthorizedUsers } from '../src/lib/telegram.js';
 import { TelegramUpdate } from '../src/types/index.js';
 
 interface VercelRequest {
@@ -83,10 +83,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[Webhook] Parsed intent:', JSON.stringify(intent));
 
     // Execute skill with spender name
-    const replyText = await executeSkill(intent, message.text, spenderName);
+    const { reply: replyText, notification } = await executeSkill(intent, message.text, spenderName);
 
     // Send confirmation back to Telegram
     await sendTelegramMessage(chatId, replyText);
+
+    // Fan out notification to other authorized users (fire-and-forget)
+    if (notification && senderId !== undefined) {
+      notifyOtherAuthorizedUsers(notification, senderId).catch(() => {});
+    }
 
     res.status(200).json({ ok: true });
   } catch (err: any) {

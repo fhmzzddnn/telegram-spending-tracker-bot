@@ -663,6 +663,69 @@ export async function deleteLastExpenseRecord(spender?: string): Promise<{ succe
 }
 
 /**
+ * Deletes the most recent income row for a specific spender from the current month ('Income')
+ */
+export async function deleteLastIncomeRecord(spender?: string): Promise<{ success: boolean; deletedDescription?: string }> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await ensureSheetInitialized();
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheetObj = meta.data.sheets?.find(
+    (s) => s.properties?.title?.toLowerCase() === SHEET_NAMES.INCOME.toLowerCase()
+  );
+  const sheetId = sheetObj?.properties?.sheetId ?? 0;
+
+  const data = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${SHEET_NAMES.INCOME}'!A:F`,
+  });
+
+  const rows = data.data.values;
+  if (!rows || rows.length <= 1) {
+    return { success: false };
+  }
+
+  let targetRowIndex = -1;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const rowSpender = String(rows[i][1] || '').trim().toLowerCase();
+    if (!spender || rowSpender === spender.trim().toLowerCase() || rowSpender.includes(spender.trim().toLowerCase())) {
+      targetRowIndex = i;
+      break;
+    }
+  }
+
+  if (targetRowIndex === -1) {
+    return { success: false };
+  }
+
+  const lastRowData = rows[targetRowIndex];
+  const formattedAmt = isNaN(Number(lastRowData[3])) ? lastRowData[3] : `Rp ${Number(lastRowData[3]).toLocaleString('id-ID')}`;
+  const deletedDescription = `${lastRowData[1]} (${lastRowData[2]} - ${formattedAmt}: ${lastRowData[4]})`;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: targetRowIndex,
+              endIndex: targetRowIndex + 1,
+            },
+          },
+        },
+      ],
+    },
+  });
+
+  return { success: true, deletedDescription };
+}
+
+/**
  * Updates the most recent expense record for a specific spender with new values in the current month ('Expenses')
  */
 export async function updateLastExpenseRecord(

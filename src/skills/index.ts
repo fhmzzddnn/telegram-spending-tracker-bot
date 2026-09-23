@@ -1,10 +1,11 @@
-import { ParsedIntent } from '../types/index.js';
+import { ParsedIntent, SkillResult } from '../types/index.js';
 import {
   appendExpenseRecord,
   appendIncomeRecord,
   getExpensesSummary,
   getIncomeSummary,
   deleteLastExpenseRecord,
+  deleteLastIncomeRecord,
   updateLastExpenseRecord,
 } from '../lib/sheets.js';
 
@@ -28,11 +29,19 @@ function formatDate(date = new Date()): string {
   return `${y}-${m}-${d} ${h}:${min}:${s}`;
 }
 
+async function getCurrentMonthBalance(): Promise<number> {
+  const [inc, exp] = await Promise.all([
+    getIncomeSummary('this_month', 'all'),
+    getExpensesSummary('this_month', 'all'),
+  ]);
+  return inc.total - exp.total;
+}
+
 export async function executeSkill(
   intent: ParsedIntent,
   rawText: string,
   spender = 'User'
-): Promise<string> {
+): Promise<SkillResult> {
   switch (intent.action) {
     case 'ADD_EXPENSE': {
       const date = intent.date ? `${intent.date} 12:00:00` : formatDate();
@@ -45,14 +54,26 @@ export async function executeSkill(
         rawText,
       });
 
-      return (
-        `✅ Pengeluaran Berhasil Dicatat\n\n` +
-        `👤 Pengeluar: ${spender}\n` +
+      const balance = await getCurrentMonthBalance();
+      const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
+      const notification =
+        `🔔 Pengeluaran Baru dari ${spender}\n\n` +
         `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
         `📂 Kategori: ${intent.category}\n` +
         `📝 Catatan: ${intent.description}\n` +
-        `📅 Tanggal: ${date.split(' ')[0]}`
-      );
+        `📅 Tanggal: ${date.split(' ')[0]}\n\n` +
+        `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`;
+
+      return {
+        reply:
+          `✅ Pengeluaran Berhasil Dicatat\n\n` +
+          `👤 Pengeluar: ${spender}\n` +
+          `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
+          `📂 Kategori: ${intent.category}\n` +
+          `📝 Catatan: ${intent.description}\n` +
+          `📅 Tanggal: ${date.split(' ')[0]}`,
+        notification,
+      };
     }
 
     case 'ADD_INCOME': {
@@ -66,19 +87,31 @@ export async function executeSkill(
         rawText,
       });
 
-      return (
-        `✅ Pemasukan Berhasil Dicatat\n\n` +
-        `👤 Penerima: ${spender}\n` +
+      const balance = await getCurrentMonthBalance();
+      const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
+      const notification =
+        `🔔 Pemasukan Baru dari ${spender}\n\n` +
         `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
         `📂 Sumber: ${intent.category}\n` +
         `📝 Catatan: ${intent.description}\n` +
-        `📅 Tanggal: ${date.split(' ')[0]}`
-      );
+        `📅 Tanggal: ${date.split(' ')[0]}\n\n` +
+        `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`;
+
+      return {
+        reply:
+          `✅ Pemasukan Berhasil Dicatat\n\n` +
+          `👤 Penerima: ${spender}\n` +
+          `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
+          `📂 Sumber: ${intent.category}\n` +
+          `📝 Catatan: ${intent.description}\n` +
+          `📅 Tanggal: ${date.split(' ')[0]}`,
+        notification,
+      };
     }
 
     case 'GET_SUMMARY': {
       const [income, expense] = await Promise.all([
-        getIncomeSummary(intent.period, intent.targetSpender, spender),
+        getIncomeSummary(intent.period, 'all'),
         getExpensesSummary(intent.period, intent.targetSpender, spender),
       ]);
       const periodLabel = {
@@ -92,11 +125,11 @@ export async function executeSkill(
       const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
 
       if (income.count === 0 && expense.count === 0) {
-        return `📊 Ringkasan Keuangan ${expense.spenderLabel} (${periodLabel})\n\nBelum ada transaksi untuk periode ini.`;
+        return { reply: `📊 Ringkasan Keuangan ${expense.spenderLabel} (${periodLabel})\n\nBelum ada transaksi untuk periode ini.` };
       }
 
       let text = `📊 Ringkasan Keuangan ${expense.spenderLabel} (${periodLabel})\n\n`;
-      text += `💰 Pemasukan: ${formatCurrency(income.total)} (${income.count} transaksi)\n`;
+      text += `💰 Pemasukan (semua pengguna): ${formatCurrency(income.total)} (${income.count} transaksi)\n`;
       text += `💸 Pengeluaran: ${formatCurrency(expense.total)} (${expense.count} transaksi)\n`;
       text += `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}\n\n`;
 
@@ -131,15 +164,23 @@ export async function executeSkill(
         }
       }
 
-      return text;
+      return { reply: text };
     }
 
     case 'DELETE_LAST_EXPENSE': {
       const res = await deleteLastExpenseRecord(spender);
       if (!res.success) {
-        return `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa dihapus.`;
+        return { reply: `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa dihapus.` };
       }
-      return `🗑️ Berhasil menghapus pengeluaran terakhir Anda:\n${res.deletedDescription || 'Data transaksi'}`;
+      return { reply: `🗑️ Berhasil menghapus pengeluaran terakhir Anda:\n${res.deletedDescription || 'Data transaksi'}` };
+    }
+
+    case 'DELETE_LAST_INCOME': {
+      const res = await deleteLastIncomeRecord(spender);
+      if (!res.success) {
+        return { reply: `⚠️ Tidak ada data pemasukan milik Anda (${spender}) yang bisa dihapus.` };
+      }
+      return { reply: `🗑️ Berhasil menghapus pemasukan terakhir Anda:\n${res.deletedDescription || 'Data pemasukan'}` };
     }
 
     case 'EDIT_LAST_EXPENSE': {
@@ -150,55 +191,65 @@ export async function executeSkill(
       });
 
       if (!res.success || !res.updatedRecord) {
-        return `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa diedit.`;
+        return { reply: `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa diedit.` };
       }
 
-      return (
-        `✏️ Pengeluaran Terakhir Berhasil Diperbarui!\n\n` +
-        `👤 Pengeluar: ${res.updatedRecord.spender}\n` +
-        `💵 Jumlah: ${formatCurrency(res.updatedRecord.amount)}\n` +
-        `📂 Kategori: ${res.updatedRecord.category}\n` +
-        `📝 Catatan: ${res.updatedRecord.description}\n` +
-        `📅 Tanggal: ${res.updatedRecord.date.split(' ')[0]}`
-      );
+      return {
+        reply:
+          `✏️ Pengeluaran Terakhir Berhasil Diperbarui!\n\n` +
+          `👤 Pengeluar: ${res.updatedRecord.spender}\n` +
+          `💵 Jumlah: ${formatCurrency(res.updatedRecord.amount)}\n` +
+          `📂 Kategori: ${res.updatedRecord.category}\n` +
+          `📝 Catatan: ${res.updatedRecord.description}\n` +
+          `📅 Tanggal: ${res.updatedRecord.date.split(' ')[0]}`,
+      };
     }
 
     case 'HELP': {
-      return (
-        `🤖 Panduan Bot Pencatat Pengeluaran\n\n` +
-        `Kirim pesan santai seperti ngobrol biasa! Contoh:\n\n` +
-        `➕ Catat Pengeluaran:\n` +
-        `• "Beli nasi goreng 15rb"\n` +
-        `• "Kopi kenangan 28k"\n` +
-        `• "Isi bensin motor 50rb tadi pagi"\n` +
-        `• "Bayar tagihan listrik 150 ribu"\n` +
-        `• "Belanja bulanan 350k kemarin"\n` +
-        `• "Grab 25rb"\n\n` +
-        `💰 Catat Pemasukan:\n` +
-        `• "Gaji 5jt"\n` +
-        `• "Bonus 500rb kemarin"\n` +
-        `• "Dapat freelance 1.5jt"\n` +
-        `• "Terima hadiah 200rb"\n\n` +
-        `✏️ Edit / Koreksi Transaksi Sendiri:\n` +
-        `• "Eh salah harganya 20rb bukan 15rb"\n` +
-        `• "Koreksi tadi jadi 35k"\n` +
-        `• "Ganti kategori jadi Transportasi"\n` +
-        `• "Ubah catatannya jadi martabak manis"\n\n` +
-        `📊 Cek Rekap & Saldo:\n` +
-        `• "Habis berapa hari ini?" (Pengeluaran sendiri)\n` +
-        `• "Pengeluaran Sarah minggu ini" (Cek orang lain)\n` +
-        `• "Rekap semua pengeluaran bulan ini" (Total gabungan)\n` +
-        `• "Saldo bulan ini" (Pemasukan - Pengeluaran)\n` +
-        `• "Uangku berapa?" (Ringkasan keuangan)\n\n` +
-        `🗑️ Batalkan Transaksi Sendiri:\n` +
-        `• "Hapus yang tadi"\n` +
-        `• "Undo transaksi terakhir"\n`
-      );
+      return {
+        reply:
+          `🤖 Panduan Bot Pencatat Pengeluaran\n\n` +
+          `Kirim pesan santai seperti ngobrol biasa! Contoh:\n\n` +
+          `➕ Catat Pengeluaran:\n` +
+          `• "Beli nasi goreng 15rb"\n` +
+          `• "Kopi kenangan 28k"\n` +
+          `• "Isi bensin motor 50rb tadi pagi"\n` +
+          `• "Bayar tagihan listrik 150 ribu"\n` +
+          `• "Belanja bulanan 350k kemarin"\n` +
+          `• "Grab 25rb"\n\n` +
+          `💰 Catat Pemasukan:\n` +
+          `• "Gaji 5jt"\n` +
+          `• "Bonus 500rb kemarin"\n` +
+          `• "Dapat freelance 1.5jt"\n` +
+          `• "Terima hadiah 200rb"\n\n` +
+          `✏️ Edit / Koreksi Transaksi Sendiri:\n` +
+          `• "Eh salah harganya 20rb bukan 15rb"\n` +
+          `• "Koreksi tadi jadi 35k"\n` +
+          `• "Ganti kategori jadi Transportasi"\n` +
+          `• "Ubah catatannya jadi martabak manis"\n\n` +
+          `📊 Cek Rekap & Saldo:\n` +
+          `• "Habis berapa hari ini?" (Pengeluaran sendiri)\n` +
+          `• "Pengeluaran Sarah minggu ini" (Cek orang lain)\n` +
+          `• "Rekap semua pengeluaran bulan ini" (Total gabungan)\n` +
+          `• "Saldo bulan ini" (Pemasukan - Pengeluaran)\n` +
+          `• "Uangku berapa?" (Ringkasan keuangan)\n\n` +
+          `🗑️ Batalkan Pengeluaran:\n` +
+          `• "Hapus yang tadi"\n` +
+          `• "Undo transaksi terakhir"\n\n` +
+          `🗑️ Batalkan Pemasukan:\n` +
+          `• "Hapus pemasukan terakhir"\n` +
+          `• "Hapus gaji tadi"\n` +
+          `• "Undo pemasukan"\n`,
+      };
     }
 
     case 'UNKNOWN':
     default: {
-      return intent.message || `Maaf, saya kurang paham. Coba ketik seperti "Beli kopi 25rb" atau ketik "help".`;
+      return {
+        reply:
+          intent.message ||
+          `Maaf, saya kurang paham. Coba ketik seperti "Beli kopi 25rb" atau ketik "help".`,
+      };
     }
   }
 }

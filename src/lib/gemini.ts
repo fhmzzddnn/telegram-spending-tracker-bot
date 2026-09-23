@@ -28,6 +28,10 @@ const DeleteLastExpenseSchema = z.object({
   action: z.literal('DELETE_LAST_EXPENSE'),
 });
 
+const DeleteLastIncomeSchema = z.object({
+  action: z.literal('DELETE_LAST_INCOME'),
+});
+
 const EditLastExpenseSchema = z.object({
   action: z.literal('EDIT_LAST_EXPENSE'),
   newAmount: z.number().positive().optional(),
@@ -49,6 +53,7 @@ const IntentSchema = z.discriminatedUnion('action', [
   AddIncomeSchema,
   GetSummarySchema,
   DeleteLastExpenseSchema,
+  DeleteLastIncomeSchema,
   EditLastExpenseSchema,
   HelpSchema,
   UnknownSchema,
@@ -103,9 +108,18 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
    - Ekstrak "period": "today" (hari ini), "this_week" (minggu ini), "this_month" (bulan ini), atau "all" (semua). Default ke "this_month" jika tidak disebutkan.
    - Ekstrak "targetSpender": jika pengguna secara spesifik menyebutkan nama seseorang (contoh: "Sarah", "Fahmi") atau kata "semua" / "gabungan". Jika pengguna hanya bertanya secara umum ("habis berapa hari ini"), kosongkan targetSpender.
 
-4. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo transaksi terakhir miliknya sendiri (contoh: "hapus transaksi terakhir", "undo", "batalin yang tadi", "delete last").
+4. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo pengeluaran terakhir miliknya sendiri (contoh: "hapus pengeluaran terakhir", "hapus transaksi tadi", "undo", "batalin yang tadi", "delete last").
+   - Jika menyebut "pemasukan" / "income" / "gaji" / "uang masuk", gunakan DELETE_LAST_INCOME (lihat butir 5), bukan yang ini.
 
-5. "EDIT_LAST_EXPENSE": Ketika pengguna ingin mengoreksi, merevisi, atau mengedit data pengeluaran terakhir miliknya yang baru saja dicatat.
+5. "DELETE_LAST_INCOME": Ketika pengguna ingin membatalkan, menghapus, atau undo pemasukan / uang masuk terakhir miliknya sendiri.
+   - Contoh input:
+     * "hapus pemasukan terakhir"
+     * "hapus gaji tadi"
+     * "undo pemasukan"
+     * "batalin pemasukan yang barusan"
+     * "delete income"
+
+6. "EDIT_LAST_EXPENSE": Ketika pengguna ingin mengoreksi, merevisi, atau mengedit data pengeluaran terakhir miliknya yang baru saja dicatat.
    - Contoh input:
      * "eh salah harganya 20rb bukan 15rb" -> action: EDIT_LAST_EXPENSE, newAmount: 20000
      * "koreksi tadi jadi 35k" -> action: EDIT_LAST_EXPENSE, newAmount: 35000
@@ -114,9 +128,9 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
      * "yang tadi buat bayar bensin 50rb" -> action: EDIT_LAST_EXPENSE, newAmount: 50000, newDescription: "bayar bensin", newCategory: "Transportasi"
    - Ekstrak "newAmount" (number positif), "newCategory" (string), dan/atau "newDescription" (string) sesuai apa yang ingin diperbarui.
 
-6. "HELP": Ketika pengguna menanyakan cara pakai, bantuan, atau perintah "/help" / "/start".
+7. "HELP": Ketika pengguna menanyakan cara pakai, bantuan, atau perintah "/help" / "/start".
 
-7. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
+8. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
    - Berikan "message" dalam bahasa Indonesia yang ramah dan membantu.
 
 Konteks tanggal hari ini: ${new Date().toISOString().split('T')[0]}.
@@ -136,7 +150,7 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
           action: {
             type: SchemaType.STRING,
             format: 'enum',
-            enum: ['ADD_EXPENSE', 'ADD_INCOME', 'GET_SUMMARY', 'DELETE_LAST_EXPENSE', 'EDIT_LAST_EXPENSE', 'HELP', 'UNKNOWN'],
+            enum: ['ADD_EXPENSE', 'ADD_INCOME', 'GET_SUMMARY', 'DELETE_LAST_EXPENSE', 'DELETE_LAST_INCOME', 'EDIT_LAST_EXPENSE', 'HELP', 'UNKNOWN'],
           },
           amount: { type: SchemaType.NUMBER },
           category: { type: SchemaType.STRING },

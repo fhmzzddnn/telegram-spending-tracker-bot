@@ -69,3 +69,36 @@ export async function sendTelegramTyping(chatId: number | string): Promise<void>
     console.warn('[Telegram] Failed to send typing indicator:', err);
   }
 }
+
+/**
+ * Parses the comma-separated authorized user IDs from env.
+ */
+export function getAuthorizedUserIds(): string[] {
+  const raw = process.env.AUTHORIZED_USER_IDS || process.env.AUTHORIZED_USER_ID || '';
+  return raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Broadcasts a message to all authorized users except the sender.
+ * Never throws — notification failures only log.
+ */
+export async function notifyOtherAuthorizedUsers(
+  text: string,
+  excludeUserId?: number | string
+): Promise<void> {
+  const exclude = excludeUserId !== undefined ? String(excludeUserId) : undefined;
+  const targets = getAuthorizedUserIds().filter((id) => id !== exclude);
+  if (targets.length === 0) return;
+
+  const results = await Promise.allSettled(
+    targets.map((id) => sendTelegramMessage(id, text))
+  );
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      console.error('[Telegram] Notification send error:', r.reason);
+    }
+  }
+}

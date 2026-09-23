@@ -36,6 +36,7 @@ export type SkillAction =
   | 'ADD_INCOME'
   | 'GET_SUMMARY'
   | 'DELETE_LAST_EXPENSE'
+  | 'DELETE_LAST_INCOME'
   | 'EDIT_LAST_EXPENSE'
   | 'HELP'
   | 'UNKNOWN';
@@ -66,6 +67,10 @@ export interface DeleteLastExpenseIntent {
   action: 'DELETE_LAST_EXPENSE';
 }
 
+export interface DeleteLastIncomeIntent {
+  action: 'DELETE_LAST_INCOME';
+}
+
 export interface EditLastExpenseIntent {
   action: 'EDIT_LAST_EXPENSE';
   newAmount?: number;
@@ -87,6 +92,7 @@ export type ParsedIntent =
   | AddIncomeIntent
   | GetSummaryIntent
   | DeleteLastExpenseIntent
+  | DeleteLastIncomeIntent
   | EditLastExpenseIntent
   | HelpIntent
   | UnknownIntent;
@@ -117,6 +123,11 @@ export interface SummaryResult {
   spenderLabel: string;
   byCategory: Record<string, number>;
   bySpender?: Record<string, number>;
+}
+
+export interface SkillResult {
+  reply: string;
+  notification?: string; // pre-formatted text for other users; only set on ADD_*
 }
 
 export interface MonthlyUserSummary {
