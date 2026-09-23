@@ -1,7 +1,9 @@
 import { ParsedIntent } from '../types/index.js';
 import {
   appendExpenseRecord,
+  appendIncomeRecord,
   getExpensesSummary,
+  getIncomeSummary,
   deleteLastExpenseRecord,
   updateLastExpenseRecord,
 } from '../lib/sheets.js';
@@ -53,8 +55,32 @@ export async function executeSkill(
       );
     }
 
+    case 'ADD_INCOME': {
+      const date = intent.date ? `${intent.date} 12:00:00` : formatDate();
+      await appendIncomeRecord({
+        date,
+        spender,
+        category: intent.category,
+        amount: intent.amount,
+        description: intent.description,
+        rawText,
+      });
+
+      return (
+        `✅ Pemasukan Berhasil Dicatat\n\n` +
+        `👤 Penerima: ${spender}\n` +
+        `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
+        `📂 Sumber: ${intent.category}\n` +
+        `📝 Catatan: ${intent.description}\n` +
+        `📅 Tanggal: ${date.split(' ')[0]}`
+      );
+    }
+
     case 'GET_SUMMARY': {
-      const summary = await getExpensesSummary(intent.period, intent.targetSpender, spender);
+      const [income, expense] = await Promise.all([
+        getIncomeSummary(intent.period, intent.targetSpender, spender),
+        getExpensesSummary(intent.period, intent.targetSpender, spender),
+      ]);
       const periodLabel = {
         today: 'Hari Ini',
         this_week: 'Minggu Ini',
@@ -62,31 +88,47 @@ export async function executeSkill(
         all: 'Semua Waktu',
       }[intent.period];
 
-      if (summary.count === 0) {
-        return `📊 Ringkasan Pengeluaran ${summary.spenderLabel} (${periodLabel})\n\nBelum ada pengeluaran yang tercatat untuk periode ini.`;
+      const balance = income.total - expense.total;
+      const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
+
+      if (income.count === 0 && expense.count === 0) {
+        return `📊 Ringkasan Keuangan ${expense.spenderLabel} (${periodLabel})\n\nBelum ada transaksi untuk periode ini.`;
       }
 
-      let text = `📊 Ringkasan Pengeluaran ${summary.spenderLabel} (${periodLabel})\n\n`;
-      text += `Total: ${formatCurrency(summary.total)} (${summary.count} transaksi)\n\n`;
+      let text = `📊 Ringkasan Keuangan ${expense.spenderLabel} (${periodLabel})\n\n`;
+      text += `💰 Pemasukan: ${formatCurrency(income.total)} (${income.count} transaksi)\n`;
+      text += `💸 Pengeluaran: ${formatCurrency(expense.total)} (${expense.count} transaksi)\n`;
+      text += `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}\n\n`;
 
-      if (summary.bySpender && Object.keys(summary.bySpender).length > 1) {
+      if (income.count > 0) {
+        text += `Rincian Pemasukan per Sumber:\n`;
+        const sortedSources = Object.entries(income.byCategory).sort(([, a], [, b]) => b - a);
+        for (const [src, amt] of sortedSources) {
+          const pct = income.total > 0 ? ((amt / income.total) * 100).toFixed(1) : '0.0';
+          text += `• ${src}: ${formatCurrency(amt)} (${pct}%)\n`;
+        }
+        text += `\n`;
+      }
+
+      if (expense.bySpender && Object.keys(expense.bySpender).length > 1) {
         text += `Rincian per Pengguna:\n`;
-        const sortedSpenders = Object.entries(summary.bySpender).sort(([, a], [, b]) => b - a);
+        const sortedSpenders = Object.entries(expense.bySpender).sort(([, a], [, b]) => b - a);
         for (const [name, amt] of sortedSpenders) {
-          const pct = ((amt / summary.total) * 100).toFixed(1);
+          const pct = expense.total > 0 ? ((amt / expense.total) * 100).toFixed(1) : '0.0';
           text += `• ${name}: ${formatCurrency(amt)} (${pct}%)\n`;
         }
         text += `\n`;
       }
 
-      text += `Rincian Kategori:\n`;
-      const sortedCategories = Object.entries(summary.byCategory).sort(
-        ([, a], [, b]) => b - a
-      );
-
-      for (const [cat, amt] of sortedCategories) {
-        const pct = ((amt / summary.total) * 100).toFixed(1);
-        text += `• ${cat}: ${formatCurrency(amt)} (${pct}%)\n`;
+      if (expense.count > 0) {
+        text += `Rincian Kategori:\n`;
+        const sortedCategories = Object.entries(expense.byCategory).sort(
+          ([, a], [, b]) => b - a
+        );
+        for (const [cat, amt] of sortedCategories) {
+          const pct = expense.total > 0 ? ((amt / expense.total) * 100).toFixed(1) : '0.0';
+          text += `• ${cat}: ${formatCurrency(amt)} (${pct}%)\n`;
+        }
       }
 
       return text;
@@ -132,15 +174,22 @@ export async function executeSkill(
         `• "Bayar tagihan listrik 150 ribu"\n` +
         `• "Belanja bulanan 350k kemarin"\n` +
         `• "Grab 25rb"\n\n` +
+        `💰 Catat Pemasukan:\n` +
+        `• "Gaji 5jt"\n` +
+        `• "Bonus 500rb kemarin"\n` +
+        `• "Dapat freelance 1.5jt"\n` +
+        `• "Terima hadiah 200rb"\n\n` +
         `✏️ Edit / Koreksi Transaksi Sendiri:\n` +
         `• "Eh salah harganya 20rb bukan 15rb"\n` +
         `• "Koreksi tadi jadi 35k"\n` +
         `• "Ganti kategori jadi Transportasi"\n` +
         `• "Ubah catatannya jadi martabak manis"\n\n` +
-        `📊 Cek Rekap Pengeluaran:\n` +
+        `📊 Cek Rekap & Saldo:\n` +
         `• "Habis berapa hari ini?" (Pengeluaran sendiri)\n` +
         `• "Pengeluaran Sarah minggu ini" (Cek orang lain)\n` +
-        `• "Rekap semua pengeluaran bulan ini" (Total gabungan)\n\n` +
+        `• "Rekap semua pengeluaran bulan ini" (Total gabungan)\n` +
+        `• "Saldo bulan ini" (Pemasukan - Pengeluaran)\n` +
+        `• "Uangku berapa?" (Ringkasan keuangan)\n\n` +
         `🗑️ Batalkan Transaksi Sendiri:\n` +
         `• "Hapus yang tadi"\n` +
         `• "Undo transaksi terakhir"\n`

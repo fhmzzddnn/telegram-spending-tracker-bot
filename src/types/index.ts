@@ -33,6 +33,7 @@ export interface TelegramUpdate {
 // Router & Skill Types
 export type SkillAction =
   | 'ADD_EXPENSE'
+  | 'ADD_INCOME'
   | 'GET_SUMMARY'
   | 'DELETE_LAST_EXPENSE'
   | 'EDIT_LAST_EXPENSE'
@@ -45,6 +46,14 @@ export interface AddExpenseIntent {
   category: string;
   description: string;
   date?: string; // Optional custom date (YYYY-MM-DD) if specified in text
+}
+
+export interface AddIncomeIntent {
+  action: 'ADD_INCOME';
+  amount: number;
+  category: string;   // income source: Gaji, Bonus, Freelance, ...
+  description: string;
+  date?: string;      // Optional custom date (YYYY-MM-DD) if specified in text
 }
 
 export interface GetSummaryIntent {
@@ -75,6 +84,7 @@ export interface UnknownIntent {
 
 export type ParsedIntent =
   | AddExpenseIntent
+  | AddIncomeIntent
   | GetSummaryIntent
   | DeleteLastExpenseIntent
   | EditLastExpenseIntent
@@ -86,6 +96,15 @@ export interface ExpenseRecord {
   date: string;       // YYYY-MM-DD HH:mm:ss
   spender: string;    // Name of the person who spent
   category: string;   // e.g. Makanan, Transportasi, etc.
+  amount: number;     // Numeric amount (IDR)
+  description: string;// Detailed note
+  rawText: string;    // Original Telegram message
+}
+
+export interface IncomeRecord {
+  date: string;       // YYYY-MM-DD HH:mm:ss
+  spender: string;    // Name of the person who received the income
+  category: string;   // income source: Gaji, Bonus, Freelance, etc.
   amount: number;     // Numeric amount (IDR)
   description: string;// Detailed note
   rawText: string;    // Original Telegram message

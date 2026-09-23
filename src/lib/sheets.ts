@@ -1,5 +1,5 @@
 import { google } from 'googleapis';
-import { ExpenseRecord, SummaryResult, RolloverResult } from '../types/index.js';
+import { ExpenseRecord, IncomeRecord, SummaryResult, RolloverResult } from '../types/index.js';
 
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 
@@ -8,12 +8,20 @@ export const SHEET_NAMES = {
   HISTORY: 'History',
   USER_MONTHLY: 'User (Monthly)',
   CATEGORY_MONTHLY: 'Category (Monthly)',
+  INCOME: 'Income',
+  INCOME_HISTORY: 'IncomeHistory',
+  INCOME_MONTHLY: 'Income (Monthly)',
+  INCOME_SOURCE_MONTHLY: 'Income Source (Monthly)',
 } as const;
 
 export const EXPENSES_HEADERS = ['Date', 'Spender', 'Category', 'Amount', 'Description', 'Raw Text'];
 export const HISTORY_HEADERS = ['Date', 'Spender', 'Category', 'Amount', 'Description', 'Raw Text'];
 export const USER_MONTHLY_HEADERS = ['Name', 'mm-yyyy', 'Amount'];
 export const CATEGORY_MONTHLY_HEADERS = ['Category', 'mm-yyyy', 'Amount'];
+export const INCOME_HEADERS = ['Date', 'Spender', 'Category', 'Amount', 'Description', 'Raw Text'];
+export const INCOME_HISTORY_HEADERS = ['Date', 'Spender', 'Category', 'Amount', 'Description', 'Raw Text'];
+export const INCOME_MONTHLY_HEADERS = ['Name', 'mm-yyyy', 'Amount'];
+export const INCOME_SOURCE_MONTHLY_HEADERS = ['Category', 'mm-yyyy', 'Amount'];
 
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
@@ -97,6 +105,10 @@ export async function ensureSheetInitialized(): Promise<void> {
       { name: SHEET_NAMES.HISTORY, headers: HISTORY_HEADERS },
       { name: SHEET_NAMES.USER_MONTHLY, headers: USER_MONTHLY_HEADERS },
       { name: SHEET_NAMES.CATEGORY_MONTHLY, headers: CATEGORY_MONTHLY_HEADERS },
+      { name: SHEET_NAMES.INCOME, headers: INCOME_HEADERS },
+      { name: SHEET_NAMES.INCOME_HISTORY, headers: INCOME_HISTORY_HEADERS },
+      { name: SHEET_NAMES.INCOME_MONTHLY, headers: INCOME_MONTHLY_HEADERS },
+      { name: SHEET_NAMES.INCOME_SOURCE_MONTHLY, headers: INCOME_SOURCE_MONTHLY_HEADERS },
     ];
 
     const addRequests: any[] = [];
@@ -156,6 +168,69 @@ export async function ensureSheetInitialized(): Promise<void> {
 }
 
 /**
+ * Upserts monthly aggregates into a target sheet (Name/Category + mm-yyyy + Amount).
+ */
+async function upsertMonthlyAggregates(
+  sheets: any,
+  spreadsheetId: string,
+  sheetName: string,
+  totalsByMonth: Map<string, Map<string, number>>
+): Promise<void> {
+  if (totalsByMonth.size === 0) return;
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${sheetName}'!A2:C`,
+  });
+  const rows: any[][] = res.data.values || [];
+  const updates: any[] = [];
+  const newRows: any[][] = [];
+
+  for (const [mYear, entries] of totalsByMonth.entries()) {
+    for (const [key, amount] of entries.entries()) {
+      const existingIdx = rows.findIndex(
+        (r) => String(r[0] || '').trim().toLowerCase() === key.trim().toLowerCase() &&
+               String(r[1] || '').trim() === mYear
+      );
+
+      if (existingIdx !== -1) {
+        const currentAmt = parseFloat(String(rows[existingIdx][2] || '0').replace(/[^0-9.-]+/g, '')) || 0;
+        const updatedAmt = currentAmt + amount;
+        rows[existingIdx][2] = updatedAmt;
+        updates.push({
+          range: `'${sheetName}'!C${existingIdx + 2}`,
+          values: [[updatedAmt]],
+        });
+      } else {
+        const row = [key, mYear, amount];
+        rows.push(row);
+        newRows.push(row);
+      }
+    }
+  }
+
+  if (updates.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: updates,
+      },
+    });
+  }
+
+  if (newRows.length > 0) {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `'${sheetName}'!A:C`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: newRows },
+    });
+  }
+}
+
+/**
  * Upserts monthly summaries into 'User (Monthly)' and 'Category (Monthly)'
  */
 async function updateMonthlySummaries(
@@ -164,113 +239,21 @@ async function updateMonthlySummaries(
   userTotalsByMonth: Map<string, Map<string, number>>,
   categoryTotalsByMonth: Map<string, Map<string, number>>
 ): Promise<void> {
-  // 1. Update User (Monthly)
-  if (userTotalsByMonth.size > 0) {
-    const userRes = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${SHEET_NAMES.USER_MONTHLY}'!A2:C`,
-    });
-    const userRows: any[][] = userRes.data.values || [];
-    const updates: any[] = [];
-    const newRows: any[][] = [];
+  await upsertMonthlyAggregates(sheets, spreadsheetId, SHEET_NAMES.USER_MONTHLY, userTotalsByMonth);
+  await upsertMonthlyAggregates(sheets, spreadsheetId, SHEET_NAMES.CATEGORY_MONTHLY, categoryTotalsByMonth);
+}
 
-    for (const [mYear, spenders] of userTotalsByMonth.entries()) {
-      for (const [spender, amount] of spenders.entries()) {
-        const existingIdx = userRows.findIndex(
-          (r) => String(r[0] || '').trim().toLowerCase() === spender.trim().toLowerCase() &&
-                 String(r[1] || '').trim() === mYear
-        );
-
-        if (existingIdx !== -1) {
-          const currentAmt = parseFloat(String(userRows[existingIdx][2] || '0').replace(/[^0-9.-]+/g, '')) || 0;
-          const updatedAmt = currentAmt + amount;
-          userRows[existingIdx][2] = updatedAmt;
-          updates.push({
-            range: `'${SHEET_NAMES.USER_MONTHLY}'!C${existingIdx + 2}`,
-            values: [[updatedAmt]],
-          });
-        } else {
-          const row = [spender, mYear, amount];
-          userRows.push(row);
-          newRows.push(row);
-        }
-      }
-    }
-
-    if (updates.length > 0) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          valueInputOption: 'USER_ENTERED',
-          data: updates,
-        },
-      });
-    }
-
-    if (newRows.length > 0) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `'${SHEET_NAMES.USER_MONTHLY}'!A:C`,
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: newRows },
-      });
-    }
-  }
-
-  // 2. Update Category (Monthly)
-  if (categoryTotalsByMonth.size > 0) {
-    const catRes = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `'${SHEET_NAMES.CATEGORY_MONTHLY}'!A2:C`,
-    });
-    const catRows: any[][] = catRes.data.values || [];
-    const updates: any[] = [];
-    const newRows: any[][] = [];
-
-    for (const [mYear, cats] of categoryTotalsByMonth.entries()) {
-      for (const [cat, amount] of cats.entries()) {
-        const existingIdx = catRows.findIndex(
-          (r) => String(r[0] || '').trim().toLowerCase() === cat.trim().toLowerCase() &&
-                 String(r[1] || '').trim() === mYear
-        );
-
-        if (existingIdx !== -1) {
-          const currentAmt = parseFloat(String(catRows[existingIdx][2] || '0').replace(/[^0-9.-]+/g, '')) || 0;
-          const updatedAmt = currentAmt + amount;
-          catRows[existingIdx][2] = updatedAmt;
-          updates.push({
-            range: `'${SHEET_NAMES.CATEGORY_MONTHLY}'!C${existingIdx + 2}`,
-            values: [[updatedAmt]],
-          });
-        } else {
-          const row = [cat, mYear, amount];
-          catRows.push(row);
-          newRows.push(row);
-        }
-      }
-    }
-
-    if (updates.length > 0) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId,
-        requestBody: {
-          valueInputOption: 'USER_ENTERED',
-          data: updates,
-        },
-      });
-    }
-
-    if (newRows.length > 0) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `'${SHEET_NAMES.CATEGORY_MONTHLY}'!A:C`,
-        valueInputOption: 'USER_ENTERED',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: newRows },
-      });
-    }
-  }
+/**
+ * Upserts monthly income summaries into 'Income (Monthly)' and 'Income Source (Monthly)'
+ */
+async function updateIncomeMonthlySummaries(
+  sheets: any,
+  spreadsheetId: string,
+  userTotalsByMonth: Map<string, Map<string, number>>,
+  sourceTotalsByMonth: Map<string, Map<string, number>>
+): Promise<void> {
+  await upsertMonthlyAggregates(sheets, spreadsheetId, SHEET_NAMES.INCOME_MONTHLY, userTotalsByMonth);
+  await upsertMonthlyAggregates(sheets, spreadsheetId, SHEET_NAMES.INCOME_SOURCE_MONTHLY, sourceTotalsByMonth);
 }
 
 /**
@@ -452,6 +435,170 @@ export async function appendExpenseRecord(record: ExpenseRecord): Promise<void> 
 }
 
 /**
+ * Rolls over income from the 'Income' sheet to 'IncomeHistory', and updates monthly summaries.
+ */
+export async function rolloverIncomeMonth(options?: {
+  forceAll?: boolean;
+  targetMonthYear?: string;
+}): Promise<RolloverResult> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await ensureSheetInitialized();
+
+  const data = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${SHEET_NAMES.INCOME}'!A2:F`,
+  });
+
+  const rows = data.data.values || [];
+  if (rows.length === 0) {
+    return { rolledOver: false, recordCount: 0, months: [] };
+  }
+
+  const targetMonthYear = options?.targetMonthYear || getCurrentMonthYear();
+  const forceAll = options?.forceAll ?? false;
+
+  const rowsToArchive: any[][] = [];
+  const rowsToKeep: any[][] = [];
+
+  const userTotalsByMonth = new Map<string, Map<string, number>>();
+  const sourceTotalsByMonth = new Map<string, Map<string, number>>();
+  const affectedMonths = new Set<string>();
+
+  for (const row of rows) {
+    const rowMonthYear = parseMonthYear(String(row[0] || '')) || 'unknown';
+    const shouldArchive = forceAll || (rowMonthYear !== targetMonthYear);
+
+    if (shouldArchive) {
+      rowsToArchive.push(row);
+      affectedMonths.add(rowMonthYear);
+
+      const spender = String(row[1] || 'User').trim();
+      const source = String(row[2] || 'Lainnya').trim();
+      const amount = parseFloat(String(row[3] || '0').replace(/[^0-9.-]+/g, '')) || 0;
+
+      if (!userTotalsByMonth.has(rowMonthYear)) {
+        userTotalsByMonth.set(rowMonthYear, new Map());
+      }
+      userTotalsByMonth.get(rowMonthYear)!.set(spender, (userTotalsByMonth.get(rowMonthYear)!.get(spender) || 0) + amount);
+
+      if (!sourceTotalsByMonth.has(rowMonthYear)) {
+        sourceTotalsByMonth.set(rowMonthYear, new Map());
+      }
+      sourceTotalsByMonth.get(rowMonthYear)!.set(source, (sourceTotalsByMonth.get(rowMonthYear)!.get(source) || 0) + amount);
+    } else {
+      rowsToKeep.push(row);
+    }
+  }
+
+  if (rowsToArchive.length === 0) {
+    return { rolledOver: false, recordCount: 0, months: [] };
+  }
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `'${SHEET_NAMES.INCOME_HISTORY}'!A:F`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rowsToArchive },
+  });
+
+  await updateIncomeMonthlySummaries(sheets, spreadsheetId, userTotalsByMonth, sourceTotalsByMonth);
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: `'${SHEET_NAMES.INCOME}'!A2:F`,
+  });
+
+  if (rowsToKeep.length > 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${SHEET_NAMES.INCOME}'!A2:F${1 + rowsToKeep.length}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: rowsToKeep },
+    });
+  }
+
+  return {
+    rolledOver: true,
+    recordCount: rowsToArchive.length,
+    months: Array.from(affectedMonths),
+  };
+}
+
+/**
+ * Checks if 'Income' sheet contains records from previous months, and triggers rollover if needed.
+ */
+export async function rolloverIncomeMonthIfNeeded(referenceDateStr?: string): Promise<RolloverResult> {
+  const targetMonthYear = (referenceDateStr && parseMonthYear(referenceDateStr)) || getCurrentMonthYear();
+  return rolloverIncomeMonth({ forceAll: false, targetMonthYear });
+}
+
+/**
+ * Appends a new income record. If the record belongs to the current active month,
+ * it rolls over any previous month data and appends to 'Income'.
+ * If the record is backdated to an older month, it archives directly to 'IncomeHistory'
+ * and updates monthly summaries without polluting 'Income'.
+ */
+export async function appendIncomeRecord(record: IncomeRecord): Promise<void> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await ensureSheetInitialized();
+
+  const recordMonthYear = parseMonthYear(record.date) || getCurrentMonthYear();
+  const currentMonthYear = getCurrentMonthYear();
+
+  if (recordMonthYear !== currentMonthYear) {
+    await rolloverIncomeMonthIfNeeded(new Date().toISOString());
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `'${SHEET_NAMES.INCOME_HISTORY}'!A:F`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: {
+        values: [[
+          record.date,
+          record.spender,
+          record.category,
+          record.amount,
+          record.description,
+          record.rawText,
+        ]],
+      },
+    });
+
+    const userMap = new Map<string, Map<string, number>>();
+    userMap.set(recordMonthYear, new Map([[record.spender, record.amount]]));
+    const sourceMap = new Map<string, Map<string, number>>();
+    sourceMap.set(recordMonthYear, new Map([[record.category, record.amount]]));
+    await updateIncomeMonthlySummaries(sheets, spreadsheetId, userMap, sourceMap);
+    return;
+  }
+
+  await rolloverIncomeMonthIfNeeded(record.date);
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `'${SHEET_NAMES.INCOME}'!A:F`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: {
+      values: [[
+        record.date,
+        record.spender,
+        record.category,
+        record.amount,
+        record.description,
+        record.rawText,
+      ]],
+    },
+  });
+}
+
+/**
  * Deletes the most recent expense row for a specific spender from the current month ('Expenses')
  */
 export async function deleteLastExpenseRecord(spender?: string): Promise<{ success: boolean; deletedDescription?: string }> {
@@ -597,6 +744,97 @@ export async function updateLastExpenseRecord(
   });
 
   return { success: true, oldRecord, updatedRecord };
+}
+
+/**
+ * Computes income summary for a given period, optionally scoped to a target spender or caller.
+ * If period is 'all', includes data from both 'Income' and 'IncomeHistory'.
+ */
+export async function getIncomeSummary(
+  period: 'today' | 'this_week' | 'this_month' | 'all',
+  targetSpender?: string,
+  callerSpender?: string
+): Promise<SummaryResult> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await ensureSheetInitialized();
+
+  let rows: any[][] = [];
+
+  if (period === 'all') {
+    const [incRes, histRes] = await Promise.all([
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.INCOME}'!A2:F` }),
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.INCOME_HISTORY}'!A2:F` }),
+    ]);
+    rows = [...(histRes.data.values || []), ...(incRes.data.values || [])];
+  } else {
+    const incRes = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${SHEET_NAMES.INCOME}'!A2:F`,
+    });
+    rows = incRes.data.values || [];
+  }
+
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayOfWeek = now.getDay() || 7;
+  const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek + 1);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  let total = 0;
+  let count = 0;
+  const byCategory: Record<string, number> = {};
+  const bySpender: Record<string, number> = {};
+
+  const isAll = targetSpender === 'all';
+  const filterName = isAll ? undefined : (targetSpender || callerSpender);
+  const spenderLabel = isAll ? 'Semua Pengguna' : (filterName || 'Anda');
+
+  for (const row of rows) {
+    const dateStr = row[0] as string;
+    const rowSpender = (row[1] as string) || 'User';
+    const category = (row[2] as string) || 'Lainnya';
+    const amount = parseFloat(String(row[3]).replace(/[^0-9.-]+/g, '')) || 0;
+
+    const entryDate = new Date(dateStr);
+    if (isNaN(entryDate.getTime())) {
+      continue;
+    }
+
+    let includeTime = false;
+    if (period === 'all') {
+      includeTime = true;
+    } else if (period === 'today' && entryDate >= startOfDay) {
+      includeTime = true;
+    } else if (period === 'this_week' && entryDate >= startOfWeek) {
+      includeTime = true;
+    } else if (period === 'this_month' && entryDate >= startOfMonth) {
+      includeTime = true;
+    }
+
+    if (!includeTime) continue;
+
+    if (filterName) {
+      const match = rowSpender.toLowerCase().includes(filterName.toLowerCase()) ||
+                    filterName.toLowerCase().includes(rowSpender.toLowerCase());
+      if (!match) continue;
+    }
+
+    total += amount;
+    count += 1;
+    byCategory[category] = (byCategory[category] || 0) + amount;
+    bySpender[rowSpender] = (bySpender[rowSpender] || 0) + amount;
+  }
+
+  return {
+    total,
+    count,
+    period,
+    spenderLabel,
+    byCategory,
+    bySpender: isAll ? bySpender : undefined,
+  };
 }
 
 /**

@@ -10,6 +10,14 @@ const AddExpenseSchema = z.object({
   date: z.string().optional(),
 });
 
+const AddIncomeSchema = z.object({
+  action: z.literal('ADD_INCOME'),
+  amount: z.number().positive(),
+  category: z.string().min(1),
+  description: z.string().min(1),
+  date: z.string().optional(),
+});
+
 const GetSummarySchema = z.object({
   action: z.literal('GET_SUMMARY'),
   period: z.enum(['today', 'this_week', 'this_month', 'all']),
@@ -38,6 +46,7 @@ const UnknownSchema = z.object({
 
 const IntentSchema = z.discriminatedUnion('action', [
   AddExpenseSchema,
+  AddIncomeSchema,
   GetSummarySchema,
   DeleteLastExpenseSchema,
   EditLastExpenseSchema,
@@ -71,7 +80,18 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
    - Ekstrak "description" berupa ringkasan barang/layanan/keperluan yang dibeli.
    - Ekstrak "date" (format YYYY-MM-DD) jika pengguna menyebutkan waktu tertentu (contoh: "kemarin", "hari senin", "tadi pagi").
 
-2. "GET_SUMMARY": Ketika pengguna meminta ringkasan, rekap, atau total pengeluaran.
+2. "ADD_INCOME": Ketika pengguna mencatat pemasukan / uang masuk / pendapatan.
+   - Ekstrak "amount" (slang uang sama: 15k/15rb/1.5jt -> 15000/1500000).
+   - Ekstrak "category" sebagai sumber pemasukan (contoh: "Gaji", "Bonus", "Freelance", "Hadiah", "Investasi", "Penjualan", "Lainnya").
+   - Ekstrak "description" berupa ringkasan pemasukan; "date" (format YYYY-MM-DD) jika menyebutkan waktu.
+   - Contoh input:
+     * "gaji 5jt" -> action: ADD_INCOME, amount: 5000000, category: "Gaji"
+     * "terima gaji bulan ini" -> action: ADD_INCOME
+     * "income 2jt" -> action: ADD_INCOME, amount: 2000000
+     * "bonus 500rb kemarin" -> action: ADD_INCOME, amount: 500000, date: (kemarin)
+     * "dapat freelance 1.5jt" -> action: ADD_INCOME, amount: 1500000, category: "Freelance"
+
+3. "GET_SUMMARY": Ketika pengguna meminta ringkasan, rekap, total pengeluaran, saldo, atau keadaan keuangan.
    - Contoh input:
      * "pengeluaran hari ini" -> period: "today"
      * "rekap minggu ini" -> period: "this_week"
@@ -79,12 +99,13 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
      * "cek pengeluaran Fahmi bulan ini" -> period: "this_month", targetSpender: "Fahmi"
      * "total semua pengeluaran" -> period: "all", targetSpender: "all"
      * "rekap gabungan minggu ini" -> period: "this_week", targetSpender: "all"
+     * "saldo bulan ini", "uangku berapa", "pemasukan dan pengeluaran" -> GET_SUMMARY (tidak perlu intent terpisah)
    - Ekstrak "period": "today" (hari ini), "this_week" (minggu ini), "this_month" (bulan ini), atau "all" (semua). Default ke "this_month" jika tidak disebutkan.
    - Ekstrak "targetSpender": jika pengguna secara spesifik menyebutkan nama seseorang (contoh: "Sarah", "Fahmi") atau kata "semua" / "gabungan". Jika pengguna hanya bertanya secara umum ("habis berapa hari ini"), kosongkan targetSpender.
 
-3. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo transaksi terakhir miliknya sendiri (contoh: "hapus transaksi terakhir", "undo", "batalin yang tadi", "delete last").
+4. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo transaksi terakhir miliknya sendiri (contoh: "hapus transaksi terakhir", "undo", "batalin yang tadi", "delete last").
 
-4. "EDIT_LAST_EXPENSE": Ketika pengguna ingin mengoreksi, merevisi, atau mengedit data pengeluaran terakhir miliknya yang baru saja dicatat.
+5. "EDIT_LAST_EXPENSE": Ketika pengguna ingin mengoreksi, merevisi, atau mengedit data pengeluaran terakhir miliknya yang baru saja dicatat.
    - Contoh input:
      * "eh salah harganya 20rb bukan 15rb" -> action: EDIT_LAST_EXPENSE, newAmount: 20000
      * "koreksi tadi jadi 35k" -> action: EDIT_LAST_EXPENSE, newAmount: 35000
@@ -93,9 +114,9 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
      * "yang tadi buat bayar bensin 50rb" -> action: EDIT_LAST_EXPENSE, newAmount: 50000, newDescription: "bayar bensin", newCategory: "Transportasi"
    - Ekstrak "newAmount" (number positif), "newCategory" (string), dan/atau "newDescription" (string) sesuai apa yang ingin diperbarui.
 
-5. "HELP": Ketika pengguna menanyakan cara pakai, bantuan, atau perintah "/help" / "/start".
+6. "HELP": Ketika pengguna menanyakan cara pakai, bantuan, atau perintah "/help" / "/start".
 
-6. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
+7. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
    - Berikan "message" dalam bahasa Indonesia yang ramah dan membantu.
 
 Konteks tanggal hari ini: ${new Date().toISOString().split('T')[0]}.
@@ -115,7 +136,7 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
           action: {
             type: SchemaType.STRING,
             format: 'enum',
-            enum: ['ADD_EXPENSE', 'GET_SUMMARY', 'DELETE_LAST_EXPENSE', 'EDIT_LAST_EXPENSE', 'HELP', 'UNKNOWN'],
+            enum: ['ADD_EXPENSE', 'ADD_INCOME', 'GET_SUMMARY', 'DELETE_LAST_EXPENSE', 'EDIT_LAST_EXPENSE', 'HELP', 'UNKNOWN'],
           },
           amount: { type: SchemaType.NUMBER },
           category: { type: SchemaType.STRING },
