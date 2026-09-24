@@ -89,16 +89,41 @@ export async function notifyOtherAuthorizedUsers(
   text: string,
   excludeUserId?: number | string
 ): Promise<void> {
+  const all = getAuthorizedUserIds();
   const exclude = excludeUserId !== undefined ? String(excludeUserId) : undefined;
-  const targets = getAuthorizedUserIds().filter((id) => id !== exclude);
-  if (targets.length === 0) return;
+  const targets = all.filter((id) => id !== exclude);
+
+  if (all.length === 0) {
+    console.warn(
+      '[Telegram] notify skipped: AUTHORIZED_USER_IDS / AUTHORIZED_USER_ID is empty — no recipients'
+    );
+    return;
+  }
+  if (targets.length === 0) {
+    console.log(
+      `[Telegram] notify skipped: no other authorized users (all=${all.length}, exclude=${exclude})`
+    );
+    return;
+  }
+
+  console.log(
+    `[Telegram] notifying ${targets.length} user(s), exclude=${exclude}: ${targets.join(', ')}`
+  );
 
   const results = await Promise.allSettled(
     targets.map((id) => sendTelegramMessage(id, text))
   );
-  for (const r of results) {
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const target = targets[i];
     if (r.status === 'rejected') {
-      console.error('[Telegram] Notification send error:', r.reason);
+      console.error(`[Telegram] Notification send error to ${target}:`, r.reason);
+    } else if (r.value === false) {
+      console.error(
+        `[Telegram] Notification send FAILED to ${target} (see sendMessage logs above — often "chat not found" if that user has never /start'd the bot)`
+      );
+    } else {
+      console.log(`[Telegram] Notification sent to ${target}`);
     }
   }
 }

@@ -88,9 +88,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Send confirmation back to Telegram
     await sendTelegramMessage(chatId, replyText);
 
-    // Fan out notification to other authorized users (fire-and-forget)
+    // Fan out notification to other authorized users (awaited so serverless
+    // does not freeze the function before the HTTP calls finish)
     if (notification && senderId !== undefined) {
-      notifyOtherAuthorizedUsers(notification, senderId).catch(() => {});
+      try {
+        await notifyOtherAuthorizedUsers(notification, senderId);
+      } catch (err) {
+        console.error('[Webhook] Notification fan-out error:', err);
+      }
     }
 
     res.status(200).json({ ok: true });
