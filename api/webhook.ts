@@ -13,11 +13,53 @@ interface VercelResponse {
   status: (code: number) => VercelResponse;
   json: (body: any) => void;
   send: (body: any) => void;
+  on?: (event: string, listener: () => void) => void;
+}
+
+function headerValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? '';
+  return value ?? '';
+}
+
+function log(level: 'log' | 'warn' | 'error', message: string, extra?: unknown): void {
+  const line = `[Webhook] ${new Date().toISOString()} ${message}`;
+  if (level === 'error') {
+    extra !== undefined ? console.error(line, extra) : console.error(line);
+  } else if (level === 'warn') {
+    extra !== undefined ? console.warn(line, extra) : console.warn(line);
+  } else {
+    extra !== undefined ? console.log(line, extra) : console.log(line);
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const startedAt = Date.now();
+  const requestId = headerValue(req.headers['x-vercel-id']) || headerValue(req.headers['x-request-id']) || 'local';
+  const method = req.method || 'UNKNOWN';
+  const secretConfigured = Boolean(process.env.TELEGRAM_SECRET_TOKEN);
+  const envSnapshot = {
+    method,
+    requestId,
+    secretConfigured,
+    authorizedUsersConfigured: Boolean(
+      process.env.AUTHORIZED_USER_IDS || process.env.AUTHORIZED_USER_ID
+    ),
+    geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite (default)',
+    sheetIdConfigured: Boolean(process.env.GOOGLE_SHEET_ID),
+    functionMs: Date.now() - startedAt,
+  };
+
+  // Entry log — fires on every request so Runtime Logs are never empty
+  log('log', `ENTER ${method} secretConfigured=${secretConfigured}`, envSnapshot);
+
+  res.on?.('finish', () => {
+    log('log', `EXIT ${method} durationMs=${Date.now() - startedAt} requestId=${requestId}`);
+  });
+
   // 1. Validate HTTP Method
-  if (req.method !== 'POST') {
+  if (method !== 'POST') {
+    log('warn', `Rejected non-POST method=${method}`);
     res.status(405).json({ error: 'Method Not Allowed' });
     return;
   }
@@ -25,12 +67,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 2. Optional: Verify Telegram Webhook Secret Token
   const secretToken = process.env.TELEGRAM_SECRET_TOKEN;
   if (secretToken) {
-    const receivedHeader = req.headers['x-telegram-bot-api-secret-token'];
+    const receivedHeader = headerValue(req.headers['x-telegram-bot-api-secret-token']);
     if (receivedHeader !== secretToken) {
-      console.warn('[Security] Invalid or missing Telegram secret token header');
+      log('warn', `Secret token mismatch (got length=${receivedHeader.length}, configured=true)`);
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
+    log('log', 'Secret token OK');
+  } else {
+    log('log', 'Secret token check skipped (TELEGRAM_SECRET_TOKEN not set)');
   }
 
   // 3. Parse Body
@@ -38,14 +83,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     update = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
   } catch (err) {
-    console.error('[Webhook] Failed to parse request body:', err);
+    log('error', 'Failed to parse request body', err);
     res.status(400).json({ error: 'Invalid JSON body' });
     return;
   }
 
   const message = update?.message || update?.edited_message;
   if (!message || !message.text) {
-    // Acknowledge non-text messages (photos, stickers, bot join events) with 200 OK
+    log('log', `Acknowledged non-text update update_id=${update?.update_id ?? 'n/a'}`);
     res.status(200).json({ ok: true, note: 'No text to process' });
     return;
   }
@@ -61,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     .filter(Boolean);
 
   if (authorizedIds.length > 0 && (!senderId || !authorizedIds.includes(String(senderId)))) {
-    console.warn(`[Security] Unauthorized access attempt from user ID: ${senderId} (@${message.from?.username || 'unknown'})`);
+    log('warn', `Unauthorized sender user_id=${senderId} username=@${message.from?.username || 'unknown'}`);
     await sendTelegramMessage(chatId, '⛔ Akses Ditolak: Anda tidak terdaftar sebagai pengguna yang diizinkan.');
     res.status(200).json({ ok: true, status: 'unauthorized_ignored' });
     return;
@@ -76,31 +121,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .filter(Boolean)
       .join(' ') || (message.from?.username ? `@${message.from.username}` : `User ${senderId}`);
 
-    console.log(`[Webhook] Processing message from ${spenderName} (${senderId}): "${message.text}"`);
+    log('log', `Processing from ${spenderName} (${senderId}): "${message.text}"`);
 
-    // Parse intent via Gemini 3.5 Flash-Lite
+    const intentStartedAt = Date.now();
     const intent = await parseUserIntent(message.text);
-    console.log('[Webhook] Parsed intent:', JSON.stringify(intent));
+    log('log', `Parsed intent in ${Date.now() - intentStartedAt}ms:`, intent);
 
-    // Execute skill with spender name
+    const skillStartedAt = Date.now();
     const { reply: replyText, notification } = await executeSkill(intent, message.text, spenderName);
+    log('log', `Skill completed in ${Date.now() - skillStartedAt}ms notification=${Boolean(notification)}`);
 
-    // Send confirmation back to Telegram
     await sendTelegramMessage(chatId, replyText);
 
-    // Fan out notification to other authorized users (awaited so serverless
-    // does not freeze the function before the HTTP calls finish)
     if (notification && senderId !== undefined) {
       try {
         await notifyOtherAuthorizedUsers(notification, senderId);
       } catch (err) {
-        console.error('[Webhook] Notification fan-out error:', err);
+        log('error', 'Notification fan-out error', err);
       }
     }
 
     res.status(200).json({ ok: true });
   } catch (err: any) {
-    console.error('[Webhook] Processing error:', err);
+    log('error', `Processing error after ${Date.now() - startedAt}ms`, err);
     await sendTelegramMessage(
       chatId,
       '❌ Terjadi kesalahan saat memproses permintaan Anda. Silakan coba beberapa saat lagi.'
