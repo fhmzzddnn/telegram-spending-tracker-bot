@@ -123,9 +123,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     log('log', `Processing from ${spenderName} (${senderId}): "${message.text}"`);
 
-    const intentStartedAt = Date.now();
-    const intent = await parseUserIntent(message.text);
-    log('log', `Parsed intent in ${Date.now() - intentStartedAt}ms:`, intent);
+    // Slash commands skip the LLM — /start and /help reply with HELP directly
+    const slashCommand = message.text.trim().split(/\s+/)[0].split('@')[0].toLowerCase();
+    let intent;
+    if (slashCommand === '/start' || slashCommand === '/help') {
+      log('log', `Shortcut ${slashCommand} → HELP (no LLM call)`);
+      intent = { action: 'HELP' as const };
+    } else {
+      const intentStartedAt = Date.now();
+      intent = await parseUserIntent(message.text);
+      log('log', `Parsed intent in ${Date.now() - intentStartedAt}ms:`, intent);
+    }
 
     const skillStartedAt = Date.now();
     const { reply: replyText, notification } = await executeSkill(intent, message.text, spenderName);
