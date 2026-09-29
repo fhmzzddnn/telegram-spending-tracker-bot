@@ -177,10 +177,21 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
     const rawJson = result.response.text();
     const parsed = JSON.parse(rawJson);
 
+    // `category`/`description` are not in the responseSchema `required` list, so the
+    // model may omit them (or send null) for terse inputs like "gaji 1jt".
+    if (parsed?.action === 'ADD_EXPENSE' || parsed?.action === 'ADD_INCOME') {
+      if (typeof parsed.category !== 'string' || !parsed.category.trim()) {
+        parsed.category = 'Lainnya';
+      }
+      if (typeof parsed.description !== 'string' || !parsed.description.trim()) {
+        parsed.description = parsed.category;
+      }
+    }
+
     // Validate with Zod
     const validated = IntentSchema.safeParse(parsed);
     if (!validated.success) {
-      console.warn('[Gemini] Schema validation failed:', validated.error.format());
+      console.warn('[Gemini] Schema validation failed:', validated.error.format(), 'raw:', rawJson);
       return {
         action: 'UNKNOWN',
         message: 'Could not understand the transaction details. Please specify an amount and item, e.g., "spent $10 on lunch".',
