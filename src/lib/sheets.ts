@@ -88,6 +88,28 @@ export function getCurrentMonthYear(d = new Date()): string {
 }
 
 /**
+ * Date cells written with USER_ENTERED are stored as Sheets serial numbers
+ * (e.g. "46290.19426") when the column has no date format, and values.get then
+ * returns that float — which `new Date()` rejects. Convert serials back to
+ * "YYYY-MM-DD HH:mm:ss"; pass anything else through unchanged.
+ */
+function normalizeSheetDate(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!/^\d+(\.\d+)?$/.test(raw)) return raw;
+  const serial = parseFloat(raw);
+  const days = Math.floor(serial);
+  const time = new Date(Math.round((serial - days) * 86400000));
+  const date = new Date(Date.UTC(1899, 11, 30) + days * 86400000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
+    `${pad(time.getUTCHours())}:${pad(time.getUTCMinutes())}:${pad(time.getUTCSeconds())}`
+  );
+}
+
+let dateFormatsPinned = false;
+
+/**
  * Ensures all required sheets exist and have their initial header rows
  */
 export async function ensureSheetInitialized(): Promise<void> {
@@ -160,6 +182,39 @@ export async function ensureSheetInitialized(): Promise<void> {
           data: updateData,
         },
       });
+    }
+
+    // Pin a date format on column A of the date-bearing sheets (once per
+    // process). Without it, USER_ENTERED dates render and read back as serial
+    // floats like "46290.19426", which new Date() rejects — breaking the edit
+    // reply and making summaries silently skip those rows.
+    if (!dateFormatsPinned) {
+      const dateSheetTitles = new Set(
+        [SHEET_NAMES.EXPENSES, SHEET_NAMES.HISTORY, SHEET_NAMES.INCOME, SHEET_NAMES.INCOME_HISTORY].map((t) =>
+          t.toLowerCase()
+        )
+      );
+      const formatRequests: any[] = [];
+      for (const s of meta.data.sheets || []) {
+        const props = s.properties;
+        if (props?.sheetId == null || !dateSheetTitles.has((props.title || '').toLowerCase())) continue;
+        formatRequests.push({
+          repeatCell: {
+            range: { sheetId: props.sheetId, startColumnIndex: 0, endColumnIndex: 1 },
+            cell: { userEnteredFormat: { numberFormat: { type: 'DATETIME', pattern: 'yyyy-MM-dd HH:mm:ss' } } },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        });
+      }
+      if (formatRequests.length > 0) {
+        try {
+          await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: formatRequests } });
+        } catch (err) {
+          console.error('[Google Sheets] Failed to pin date column format:', err);
+        }
+      }
+      // Sheets created in this call aren't in `meta` yet; retry on the next run.
+      if (addRequests.length === 0) dateFormatsPinned = true;
     }
   } catch (err) {
     console.error('[Google Sheets] Error initializing sheets:', err);
@@ -773,7 +828,7 @@ export async function updateLastExpenseRecord(
   const lastRowData = rows[targetRowIndex];
 
   const oldRecord: ExpenseRecord = {
-    date: String(lastRowData[0] || ''),
+    date: normalizeSheetDate(lastRowData[0]),
     spender: String(lastRowData[1] || ''),
     category: String(lastRowData[2] || ''),
     amount: Number(lastRowData[3]) || 0,
@@ -860,7 +915,7 @@ export async function getIncomeSummary(
     const category = (row[2] as string) || 'Lainnya';
     const amount = parseFloat(String(row[3]).replace(/[^0-9.-]+/g, '')) || 0;
 
-    const entryDate = new Date(dateStr);
+    const entryDate = new Date(normalizeSheetDate(dateStr));
     if (isNaN(entryDate.getTime())) {
       continue;
     }
@@ -954,7 +1009,7 @@ export async function getExpensesSummary(
     const category = (row[2] as string) || 'Lainnya';
     const amount = parseFloat(String(row[3]).replace(/[^0-9.-]+/g, '')) || 0;
 
-    const entryDate = new Date(dateStr);
+    const entryDate = new Date(normalizeSheetDate(dateStr));
     if (isNaN(entryDate.getTime())) {
       continue;
     }

@@ -71,7 +71,8 @@ export async function executeSkill(
           `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
           `📂 Kategori: ${intent.category}\n` +
           `📝 Catatan: ${intent.description}\n` +
-          `📅 Tanggal: ${date.split(' ')[0]}`,
+          `📅 Tanggal: ${date.split(' ')[0]}\n` +
+          `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`,
         notification,
       };
     }
@@ -104,15 +105,19 @@ export async function executeSkill(
           `💵 Jumlah: ${formatCurrency(intent.amount)}\n` +
           `📂 Sumber: ${intent.category}\n` +
           `📝 Catatan: ${intent.description}\n` +
-          `📅 Tanggal: ${date.split(' ')[0]}`,
+          `📅 Tanggal: ${date.split(' ')[0]}\n` +
+          `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`,
         notification,
       };
     }
 
     case 'GET_SUMMARY': {
+      // Default to all users combined so income/expense/balance share one scope;
+      // an explicit targetSpender (a person's name) still narrows both sides.
+      const scope = intent.targetSpender ?? 'all';
       const [income, expense] = await Promise.all([
-        getIncomeSummary(intent.period, 'all'),
-        getExpensesSummary(intent.period, intent.targetSpender, spender),
+        getIncomeSummary(intent.period, scope),
+        getExpensesSummary(intent.period, scope),
       ]);
       const periodLabel = {
         today: 'Hari Ini',
@@ -129,7 +134,7 @@ export async function executeSkill(
       }
 
       let text = `📊 Ringkasan Keuangan ${expense.spenderLabel} (${periodLabel})\n\n`;
-      text += `💰 Pemasukan (semua pengguna): ${formatCurrency(income.total)} (${income.count} transaksi)\n`;
+      text += `💰 Pemasukan: ${formatCurrency(income.total)} (${income.count} transaksi)\n`;
       text += `💸 Pengeluaran: ${formatCurrency(expense.total)} (${expense.count} transaksi)\n`;
       text += `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}\n\n`;
 
@@ -194,6 +199,9 @@ export async function executeSkill(
         return { reply: `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa diedit.` };
       }
 
+      const balance = await getCurrentMonthBalance();
+      const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
+
       return {
         reply:
           `✏️ Pengeluaran Terakhir Berhasil Diperbarui!\n\n` +
@@ -201,7 +209,8 @@ export async function executeSkill(
           `💵 Jumlah: ${formatCurrency(res.updatedRecord.amount)}\n` +
           `📂 Kategori: ${res.updatedRecord.category}\n` +
           `📝 Catatan: ${res.updatedRecord.description}\n` +
-          `📅 Tanggal: ${res.updatedRecord.date.split(' ')[0]}`,
+          `📅 Tanggal: ${res.updatedRecord.date.split(' ')[0]}\n` +
+          `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`,
       };
     }
 
@@ -228,8 +237,8 @@ export async function executeSkill(
           `• "Ganti kategori jadi Transportasi"\n` +
           `• "Ubah catatannya jadi martabak manis"\n\n` +
           `📊 Cek Rekap & Saldo:\n` +
-          `• "Habis berapa hari ini?" (Pengeluaran sendiri)\n` +
-          `• "Pengeluaran Sarah minggu ini" (Cek orang lain)\n` +
+          `• "Habis berapa hari ini?" (Gabungan semua pengguna)\n` +
+          `• "Pengeluaran Sarah minggu ini" (Cek per orang)\n` +
           `• "Rekap semua pengeluaran bulan ini" (Total gabungan)\n` +
           `• "Saldo bulan ini" (Pemasukan - Pengeluaran)\n` +
           `• "Uangku berapa?" (Ringkasan keuangan)\n\n` +

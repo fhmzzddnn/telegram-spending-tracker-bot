@@ -106,7 +106,7 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
      * "rekap gabungan minggu ini" -> period: "this_week", targetSpender: "all"
      * "saldo bulan ini", "uangku berapa", "pemasukan dan pengeluaran" -> GET_SUMMARY (tidak perlu intent terpisah)
    - Ekstrak "period": "today" (hari ini), "this_week" (minggu ini), "this_month" (bulan ini), atau "all" (semua). Default ke "this_month" jika tidak disebutkan.
-   - Ekstrak "targetSpender": jika pengguna secara spesifik menyebutkan nama seseorang (contoh: "Sarah", "Fahmi") atau kata "semua" / "gabungan". Jika pengguna hanya bertanya secara umum ("habis berapa hari ini"), kosongkan targetSpender.
+   - Ekstrak "targetSpender": jika pengguna secara spesifik menyebutkan nama seseorang (contoh: "Sarah", "Fahmi") atau kata "semua" / "gabungan". Jika pengguna hanya bertanya secara umum ("habis berapa hari ini"), kosongkan targetSpender — berarti ringkasan gabungan semua pengguna.
 
 4. "DELETE_LAST_EXPENSE": Ketika pengguna ingin membatalkan, menghapus, atau undo pengeluaran terakhir miliknya sendiri (contoh: "hapus pengeluaran terakhir", "hapus transaksi tadi", "undo", "batalin yang tadi", "delete last").
    - Jika menyebut "pemasukan" / "income" / "gaji" / "uang masuk", gunakan DELETE_LAST_INCOME (lihat butir 5), bukan yang ini.
