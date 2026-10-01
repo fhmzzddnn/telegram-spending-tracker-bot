@@ -4,6 +4,7 @@ import {
   appendIncomeRecord,
   getExpensesSummary,
   getIncomeSummary,
+  getBalance,
   deleteLastExpenseRecord,
   deleteLastIncomeRecord,
   updateLastExpenseRecord,
@@ -29,14 +30,6 @@ function formatDate(date = new Date()): string {
   return `${y}-${m}-${d} ${h}:${min}:${s}`;
 }
 
-async function getCurrentMonthBalance(): Promise<number> {
-  const [inc, exp] = await Promise.all([
-    getIncomeSummary('this_month', 'all'),
-    getExpensesSummary('this_month', 'all'),
-  ]);
-  return inc.total - exp.total;
-}
-
 export async function executeSkill(
   intent: ParsedIntent,
   rawText: string,
@@ -54,7 +47,7 @@ export async function executeSkill(
         rawText,
       });
 
-      const balance = await getCurrentMonthBalance();
+      const balance = await getBalance();
       const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
       const notification =
         `🔔 Pengeluaran Baru dari ${spender}\n\n` +
@@ -62,7 +55,7 @@ export async function executeSkill(
         `📂 Kategori: ${intent.category}\n` +
         `📝 Catatan: ${intent.description}\n` +
         `📅 Tanggal: ${date.split(' ')[0]}\n\n` +
-        `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`;
+        `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}`;
 
       return {
         reply:
@@ -72,7 +65,7 @@ export async function executeSkill(
           `📂 Kategori: ${intent.category}\n` +
           `📝 Catatan: ${intent.description}\n` +
           `📅 Tanggal: ${date.split(' ')[0]}\n` +
-          `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`,
+          `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}`,
         notification,
       };
     }
@@ -88,7 +81,7 @@ export async function executeSkill(
         rawText,
       });
 
-      const balance = await getCurrentMonthBalance();
+      const balance = await getBalance();
       const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
       const notification =
         `🔔 Pemasukan Baru dari ${spender}\n\n` +
@@ -96,7 +89,7 @@ export async function executeSkill(
         `📂 Sumber: ${intent.category}\n` +
         `📝 Catatan: ${intent.description}\n` +
         `📅 Tanggal: ${date.split(' ')[0]}\n\n` +
-        `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`;
+        `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}`;
 
       return {
         reply:
@@ -106,18 +99,20 @@ export async function executeSkill(
           `📂 Sumber: ${intent.category}\n` +
           `📝 Catatan: ${intent.description}\n` +
           `📅 Tanggal: ${date.split(' ')[0]}\n` +
-          `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`,
+          `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}`,
         notification,
       };
     }
 
     case 'GET_SUMMARY': {
-      // Default to all users combined so income/expense/balance share one scope;
+      // Default to all users combined so income/expense share one scope;
       // an explicit targetSpender (a person's name) still narrows both sides.
+      // Saldo always comes from the Balance tab cell (all users, all time).
       const scope = intent.targetSpender ?? 'all';
-      const [income, expense] = await Promise.all([
+      const [income, expense, balance] = await Promise.all([
         getIncomeSummary(intent.period, scope),
         getExpensesSummary(intent.period, scope),
+        getBalance(),
       ]);
       const periodLabel = {
         today: 'Hari Ini',
@@ -126,7 +121,6 @@ export async function executeSkill(
         all: 'Semua Waktu',
       }[intent.period];
 
-      const balance = income.total - expense.total;
       const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
 
       if (income.count === 0 && expense.count === 0) {
@@ -199,7 +193,7 @@ export async function executeSkill(
         return { reply: `⚠️ Tidak ada data pengeluaran milik Anda (${spender}) yang bisa diedit.` };
       }
 
-      const balance = await getCurrentMonthBalance();
+      const balance = await getBalance();
       const balanceLabel = balance < 0 ? ' (defisit)' : balance === 0 ? ' (imbang)' : '';
 
       return {
@@ -210,7 +204,7 @@ export async function executeSkill(
           `📂 Kategori: ${res.updatedRecord.category}\n` +
           `📝 Catatan: ${res.updatedRecord.description}\n` +
           `📅 Tanggal: ${res.updatedRecord.date.split(' ')[0]}\n` +
-          `🧮 Saldo Bulan Ini: ${formatCurrency(balance)}${balanceLabel}`,
+          `🧮 Saldo: ${formatCurrency(balance)}${balanceLabel}`,
       };
     }
 

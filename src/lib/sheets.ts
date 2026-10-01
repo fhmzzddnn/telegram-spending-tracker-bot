@@ -12,7 +12,20 @@ export const SHEET_NAMES = {
   INCOME_HISTORY: 'IncomeHistory',
   INCOME_MONTHLY: 'Income (Monthly)',
   INCOME_SOURCE_MONTHLY: 'Income Source (Monthly)',
+  BALANCE: 'Balance',
 } as const;
+
+/** Running total of each history table, stored in H1 (data lives in A:F). */
+export const HISTORY_SUM_FORMULA = "=SUM('History'!D2:D)";
+export const INCOME_HISTORY_SUM_FORMULA = "=SUM('IncomeHistory'!D2:D)";
+
+/**
+ * All-time, all-users net balance. Live tabs are summed directly; history tables
+ * are read through their H1 sum cells so the balance cell never scans them.
+ * Must stay in sync with the seed cells in ensureSheetInitialized().
+ */
+export const BALANCE_FORMULA =
+  "=SUM('Income'!D2:D)+'IncomeHistory'!H1-SUM('Expenses'!D2:D)-'History'!H1";
 
 export const EXPENSES_HEADERS = ['Date', 'Spender', 'Category', 'Amount', 'Description', 'Raw Text'];
 export const HISTORY_HEADERS = ['Date', 'Spender', 'Category', 'Amount', 'Description', 'Raw Text'];
@@ -133,12 +146,16 @@ export async function ensureSheetInitialized(): Promise<void> {
       { name: SHEET_NAMES.INCOME_SOURCE_MONTHLY, headers: INCOME_SOURCE_MONTHLY_HEADERS },
     ];
 
+    // Balance carries a formula in A1 instead of a header row, so it is only
+    // part of the creation list, not of the header verification below.
+    const creationNames = [...sheetDefs.map((d) => d.name), SHEET_NAMES.BALANCE];
+
     const addRequests: any[] = [];
-    for (const def of sheetDefs) {
-      if (!existingSheets.has(def.name.toLowerCase())) {
+    for (const name of creationNames) {
+      if (!existingSheets.has(name.toLowerCase())) {
         addRequests.push({
           addSheet: {
-            properties: { title: def.name },
+            properties: { title: name },
           },
         });
       }
@@ -180,6 +197,34 @@ export async function ensureSheetInitialized(): Promise<void> {
         requestBody: {
           valueInputOption: 'USER_ENTERED',
           data: updateData,
+        },
+      });
+    }
+
+    // Seed the history sum cells and the balance cell — only while a cell is
+    // empty, so a manual value typed into the sheet is never clobbered.
+    const seedCells = [
+      { range: `'${SHEET_NAMES.HISTORY}'!H1`, formula: HISTORY_SUM_FORMULA },
+      { range: `'${SHEET_NAMES.INCOME_HISTORY}'!H1`, formula: INCOME_HISTORY_SUM_FORMULA },
+      { range: `'${SHEET_NAMES.BALANCE}'!A1`, formula: BALANCE_FORMULA },
+    ];
+    const seedData = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId,
+      ranges: seedCells.map((c) => c.range),
+    });
+    const seedUpdates: any[] = [];
+    seedData.data.valueRanges?.forEach((vr, idx) => {
+      const raw = vr.values?.[0]?.[0];
+      if (raw === undefined || String(raw).trim() === '') {
+        seedUpdates.push({ range: seedCells[idx].range, values: [[seedCells[idx].formula]] });
+      }
+    });
+    if (seedUpdates.length > 0) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          valueInputOption: 'USER_ENTERED',
+          data: seedUpdates,
         },
       });
     }
@@ -862,6 +907,28 @@ export async function updateLastExpenseRecord(
   });
 
   return { success: true, oldRecord, updatedRecord };
+}
+
+/**
+ * Reads the stored balance from the 'Balance' tab (A1).
+ * The cell is a live formula: live tabs summed directly, history tables via
+ * their H1 sum cells — all users, all time. This function only fetches the value.
+ */
+export async function getBalance(): Promise<number> {
+  const sheets = getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
+
+  await ensureSheetInitialized();
+
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${SHEET_NAMES.BALANCE}'!A1`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+  });
+
+  const raw = res.data.values?.[0]?.[0];
+  const value = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim());
+  return Number.isFinite(value) ? value : 0;
 }
 
 /**
