@@ -67,12 +67,51 @@ function getSpreadsheetId(): string {
   return id;
 }
 
+/** WIB (Asia/Jakarta, UTC+7, no DST) offset used for all calendar math. */
+export const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/** Date whose getUTC* accessors return the current WIB wall-clock components. */
+export function wibNow(now = new Date()): Date {
+  return new Date(now.getTime() + WIB_OFFSET_MS);
+}
+
+/**
+ * Parses a sheet date (serial number or "YYYY-MM-DD HH:mm:ss" text) into an
+ * epoch whose getUTC* accessors yield the stored wall-clock components —
+ * independent of the host machine's timezone. Returns null when unparseable.
+ */
+export function parseSheetDateWall(dateValue: unknown): Date | null {
+  const normalized = normalizeSheetDate(dateValue);
+  const m = normalized.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (m) {
+    return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)));
+  }
+  const fallback = new Date(normalized);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+
+/**
+ * Normalizes a rollup month-key cell to "mm-yyyy". Legacy rows were written
+ * with USER_ENTERED, which date-parsed "09-2026" into a serial (e.g. 46266);
+ * those must still match incoming "09-2026" keys.
+ */
+function monthYearFromCell(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (raw === '') return '';
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    return parseMonthYear(raw) ?? raw;
+  }
+  return raw;
+}
+
 /**
  * Extracts "mm-yyyy" from a date string (e.g., "2026-09-15 12:00:00" -> "09-2026")
  */
 export function parseMonthYear(dateStr: string): string | null {
   if (!dateStr) return null;
-  const trimmed = dateStr.trim();
+  // Auto-detected date cells read back as serial numbers ("46297.09036"); the
+  // rollover must normalize those first or it files them as month "unknown".
+  const trimmed = normalizeSheetDate(dateStr).trim();
   const matchYMD = trimmed.match(/^(\d{4})[-/](\d{1,2})/);
   if (matchYMD) {
     const year = matchYMD[1];
@@ -95,8 +134,9 @@ export function parseMonthYear(dateStr: string): string | null {
 }
 
 export function getCurrentMonthYear(d = new Date()): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const y = d.getFullYear();
+  const wib = wibNow(d);
+  const m = String(wib.getUTCMonth() + 1).padStart(2, '0');
+  const y = wib.getUTCFullYear();
   return `${m}-${y}`;
 }
 
@@ -125,7 +165,22 @@ let dateFormatsPinned = false;
 /**
  * Ensures all required sheets exist and have their initial header rows
  */
+let initInFlight: Promise<void> | null = null;
+
+/**
+ * Concurrent callers (e.g. Promise.all in GET_SUMMARY) coalesce into ONE init,
+ * so racing addSheet requests can't fail with "sheet already exists".
+ */
 export async function ensureSheetInitialized(): Promise<void> {
+  if (!initInFlight) {
+    initInFlight = doEnsureSheetInitialized().finally(() => {
+      initInFlight = null;
+    });
+  }
+  return initInFlight;
+}
+
+async function doEnsureSheetInitialized(): Promise<void> {
   const sheets = getSheetsClient();
   const spreadsheetId = getSpreadsheetId();
 
@@ -162,10 +217,16 @@ export async function ensureSheetInitialized(): Promise<void> {
     }
 
     if (addRequests.length > 0) {
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId,
-        requestBody: { requests: addRequests },
-      });
+      try {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: { requests: addRequests },
+        });
+      } catch (err: any) {
+        // Another warm instance created the tabs between our meta read and write.
+        if (!/already exists/i.test(String(err?.message || ''))) throw err;
+        console.warn('[Google Sheets] addSheet raced with another instance — tabs already exist');
+      }
     }
 
     // Verify headers for all sheets
@@ -201,8 +262,10 @@ export async function ensureSheetInitialized(): Promise<void> {
       });
     }
 
-    // Seed the history sum cells and the balance cell — only while a cell is
-    // empty, so a manual value typed into the sheet is never clobbered.
+    // Seed/repair the history sum cells and the balance cell. Empty cells get
+    // the canonical formula; a cell holding a DIFFERENT formula (e.g. a
+    // reference shifted by an inserted row) is repaired too; a hand-typed
+    // non-formula value is never touched.
     const seedCells = [
       { range: `'${SHEET_NAMES.HISTORY}'!H1`, formula: HISTORY_SUM_FORMULA },
       { range: `'${SHEET_NAMES.INCOME_HISTORY}'!H1`, formula: INCOME_HISTORY_SUM_FORMULA },
@@ -211,12 +274,18 @@ export async function ensureSheetInitialized(): Promise<void> {
     const seedData = await sheets.spreadsheets.values.batchGet({
       spreadsheetId,
       ranges: seedCells.map((c) => c.range),
+      valueRenderOption: 'FORMULA',
     });
+    const normalizeFormula = (f: unknown) => String(f).replace(/'/g, '').trim();
     const seedUpdates: any[] = [];
     seedData.data.valueRanges?.forEach((vr, idx) => {
       const raw = vr.values?.[0]?.[0];
+      const cell = seedCells[idx];
       if (raw === undefined || String(raw).trim() === '') {
-        seedUpdates.push({ range: seedCells[idx].range, values: [[seedCells[idx].formula]] });
+        seedUpdates.push({ range: cell.range, values: [[cell.formula]] });
+      } else if (String(raw).startsWith('=') && normalizeFormula(raw) !== normalizeFormula(cell.formula)) {
+        console.warn(`[Google Sheets] ${cell.range} formula drifted — repairing: ${raw}`);
+        seedUpdates.push({ range: cell.range, values: [[cell.formula]] });
       }
     });
     if (seedUpdates.length > 0) {
@@ -246,7 +315,7 @@ export async function ensureSheetInitialized(): Promise<void> {
         formatRequests.push({
           repeatCell: {
             range: { sheetId: props.sheetId, startColumnIndex: 0, endColumnIndex: 1 },
-            cell: { userEnteredFormat: { numberFormat: { type: 'DATETIME', pattern: 'yyyy-MM-dd HH:mm:ss' } } },
+            cell: { userEnteredFormat: { numberFormat: { type: 'DATE_TIME', pattern: 'yyyy-MM-dd HH:mm:ss' } } },
             fields: 'userEnteredFormat.numberFormat',
           },
         });
@@ -281,6 +350,7 @@ async function upsertMonthlyAggregates(
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${sheetName}'!A2:C`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
   const rows: any[][] = res.data.values || [];
   const updates: any[] = [];
@@ -290,7 +360,7 @@ async function upsertMonthlyAggregates(
     for (const [key, amount] of entries.entries()) {
       const existingIdx = rows.findIndex(
         (r) => String(r[0] || '').trim().toLowerCase() === key.trim().toLowerCase() &&
-               String(r[1] || '').trim() === mYear
+               monthYearFromCell(r[1]) === mYear
       );
 
       if (existingIdx !== -1) {
@@ -313,7 +383,10 @@ async function upsertMonthlyAggregates(
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId,
       requestBody: {
-        valueInputOption: 'USER_ENTERED',
+        // RAW so the "mm-yyyy" month key stays text — USER_ENTERED would
+        // date-parse it into a serial (e.g. "09-2026" → 46266) and then no
+        // future upsert could ever match the row again.
+        valueInputOption: 'RAW',
         data: updates,
       },
     });
@@ -323,7 +396,7 @@ async function upsertMonthlyAggregates(
     await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `'${sheetName}'!A:C`,
-      valueInputOption: 'USER_ENTERED',
+      valueInputOption: 'RAW',
       insertDataOption: 'INSERT_ROWS',
       requestBody: { values: newRows },
     });
@@ -373,6 +446,7 @@ export async function rolloverMonth(options?: {
   const data = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${SHEET_NAMES.EXPENSES}'!A2:F`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
 
   const rows = data.data.values || [];
@@ -549,6 +623,7 @@ export async function rolloverIncomeMonth(options?: {
   const data = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${SHEET_NAMES.INCOME}'!A2:F`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
 
   const rows = data.data.values || [];
@@ -716,6 +791,7 @@ export async function deleteLastExpenseRecord(spender?: string): Promise<{ succe
   const data = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${SHEET_NAMES.EXPENSES}'!A:F`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
 
   const rows = data.data.values;
@@ -780,6 +856,7 @@ export async function deleteLastIncomeRecord(spender?: string): Promise<{ succes
   const data = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${SHEET_NAMES.INCOME}'!A:F`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
 
   const rows = data.data.values;
@@ -848,6 +925,7 @@ export async function updateLastExpenseRecord(
   const data = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${SHEET_NAMES.EXPENSES}'!A:F`,
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
 
   const rows = data.data.values;
@@ -949,23 +1027,26 @@ export async function getIncomeSummary(
 
   if (period === 'all') {
     const [incRes, histRes] = await Promise.all([
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.INCOME}'!A2:F` }),
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.INCOME_HISTORY}'!A2:F` }),
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.INCOME}'!A2:F`, valueRenderOption: 'UNFORMATTED_VALUE' }),
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.INCOME_HISTORY}'!A2:F`, valueRenderOption: 'UNFORMATTED_VALUE' }),
     ]);
     rows = [...(histRes.data.values || []), ...(incRes.data.values || [])];
   } else {
     const incRes = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `'${SHEET_NAMES.INCOME}'!A2:F`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
     });
     rows = incRes.data.values || [];
   }
 
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const dayOfWeek = now.getDay() || 7;
-  const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek + 1);
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  // Wall-clock boundaries in WIB (UTC+7); compared against parseSheetDateWall epochs.
+  const nowWall = wibNow();
+  const wallDay = nowWall.getUTCDate();
+  const startOfDay = Date.UTC(nowWall.getUTCFullYear(), nowWall.getUTCMonth(), wallDay);
+  const dayOfWeek = nowWall.getUTCDay() || 7; // Monday = 1
+  const startOfWeek = Date.UTC(nowWall.getUTCFullYear(), nowWall.getUTCMonth(), wallDay - dayOfWeek + 1);
+  const startOfMonth = Date.UTC(nowWall.getUTCFullYear(), nowWall.getUTCMonth(), 1);
 
   let total = 0;
   let count = 0;
@@ -982,19 +1063,19 @@ export async function getIncomeSummary(
     const category = (row[2] as string) || 'Lainnya';
     const amount = parseFloat(String(row[3]).replace(/[^0-9.-]+/g, '')) || 0;
 
-    const entryDate = new Date(normalizeSheetDate(dateStr));
-    if (isNaN(entryDate.getTime())) {
+    const entryDate = parseSheetDateWall(dateStr);
+    if (!entryDate) {
       continue;
     }
 
     let includeTime = false;
     if (period === 'all') {
       includeTime = true;
-    } else if (period === 'today' && entryDate >= startOfDay) {
+    } else if (period === 'today' && entryDate.getTime() >= startOfDay) {
       includeTime = true;
-    } else if (period === 'this_week' && entryDate >= startOfWeek) {
+    } else if (period === 'this_week' && entryDate.getTime() >= startOfWeek) {
       includeTime = true;
-    } else if (period === 'this_month' && entryDate >= startOfMonth) {
+    } else if (period === 'this_month' && entryDate.getTime() >= startOfMonth) {
       includeTime = true;
     }
 
@@ -1040,25 +1121,26 @@ export async function getExpensesSummary(
 
   if (period === 'all') {
     const [expRes, histRes] = await Promise.all([
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.EXPENSES}'!A2:F` }),
-      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.HISTORY}'!A2:F` }),
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.EXPENSES}'!A2:F`, valueRenderOption: 'UNFORMATTED_VALUE' }),
+      sheets.spreadsheets.values.get({ spreadsheetId, range: `'${SHEET_NAMES.HISTORY}'!A2:F`, valueRenderOption: 'UNFORMATTED_VALUE' }),
     ]);
     rows = [...(histRes.data.values || []), ...(expRes.data.values || [])];
   } else {
     const expRes = await sheets.spreadsheets.values.get({
       spreadsheetId,
       range: `'${SHEET_NAMES.EXPENSES}'!A2:F`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
     });
     rows = expRes.data.values || [];
   }
 
-  const now = new Date();
-
-  // Start boundaries
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const dayOfWeek = now.getDay() || 7; // Monday = 1
-  const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek + 1);
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  // Wall-clock boundaries in WIB (UTC+7); compared against parseSheetDateWall epochs.
+  const nowWall = wibNow();
+  const wallDay = nowWall.getUTCDate();
+  const startOfDay = Date.UTC(nowWall.getUTCFullYear(), nowWall.getUTCMonth(), wallDay);
+  const dayOfWeek = nowWall.getUTCDay() || 7; // Monday = 1
+  const startOfWeek = Date.UTC(nowWall.getUTCFullYear(), nowWall.getUTCMonth(), wallDay - dayOfWeek + 1);
+  const startOfMonth = Date.UTC(nowWall.getUTCFullYear(), nowWall.getUTCMonth(), 1);
 
   let total = 0;
   let count = 0;
@@ -1076,8 +1158,8 @@ export async function getExpensesSummary(
     const category = (row[2] as string) || 'Lainnya';
     const amount = parseFloat(String(row[3]).replace(/[^0-9.-]+/g, '')) || 0;
 
-    const entryDate = new Date(normalizeSheetDate(dateStr));
-    if (isNaN(entryDate.getTime())) {
+    const entryDate = parseSheetDateWall(dateStr);
+    if (!entryDate) {
       continue;
     }
 
@@ -1085,11 +1167,11 @@ export async function getExpensesSummary(
     let includeTime = false;
     if (period === 'all') {
       includeTime = true;
-    } else if (period === 'today' && entryDate >= startOfDay) {
+    } else if (period === 'today' && entryDate.getTime() >= startOfDay) {
       includeTime = true;
-    } else if (period === 'this_week' && entryDate >= startOfWeek) {
+    } else if (period === 'this_week' && entryDate.getTime() >= startOfWeek) {
       includeTime = true;
-    } else if (period === 'this_month' && entryDate >= startOfMonth) {
+    } else if (period === 'this_month' && entryDate.getTime() >= startOfMonth) {
       includeTime = true;
     }
 

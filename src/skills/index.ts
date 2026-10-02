@@ -8,6 +8,7 @@ import {
   deleteLastExpenseRecord,
   deleteLastIncomeRecord,
   updateLastExpenseRecord,
+  WIB_OFFSET_MS,
 } from '../lib/sheets.js';
 
 function formatCurrency(amount: number): string {
@@ -19,15 +20,14 @@ function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
+/** Stamp in WIB (UTC+7) — the server clock is UTC, users are not. */
 function formatDate(date = new Date()): string {
+  const wib = new Date(date.getTime() + WIB_OFFSET_MS);
   const pad = (n: number) => String(n).padStart(2, '0');
-  const y = date.getFullYear();
-  const m = pad(date.getMonth() + 1);
-  const d = pad(date.getDate());
-  const h = pad(date.getHours());
-  const min = pad(date.getMinutes());
-  const s = pad(date.getSeconds());
-  return `${y}-${m}-${d} ${h}:${min}:${s}`;
+  return (
+    `${wib.getUTCFullYear()}-${pad(wib.getUTCMonth() + 1)}-${pad(wib.getUTCDate())} ` +
+    `${pad(wib.getUTCHours())}:${pad(wib.getUTCMinutes())}:${pad(wib.getUTCSeconds())}`
+  );
 }
 
 export async function executeSkill(

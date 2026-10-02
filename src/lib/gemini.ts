@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
 import { z } from 'zod';
 import { ParsedIntent } from '../types/index.js';
+import { WIB_OFFSET_MS } from './sheets.js';
 
 const AddExpenseSchema = z.object({
   action: z.literal('ADD_EXPENSE'),
@@ -72,7 +73,9 @@ function getClient(): GoogleGenerativeAI {
   return genAIClient;
 }
 
-const SYSTEM_INSTRUCTION = `Anda adalah asisten perute niat keuangan untuk bot Telegram pencatat pengeluaran pribadi (pembukuan).
+// Built per call so the date context can't go stale on a warm container.
+function buildSystemInstruction(): string {
+  return `Anda adalah asisten perute niat keuangan untuk bot Telegram pencatat pengeluaran pribadi (pembukuan).
 Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan petakan ke tepat SATU skill action:
 
 1. "ADD_EXPENSE": Ketika pengguna mencatat pengeluaran atau transaksi pembelian.
@@ -133,15 +136,16 @@ Analisis input bahasa alami dari pengguna (bahasa Indonesia atau Inggris) dan pe
 8. "UNKNOWN": Jika input tidak berkaitan dengan pencatatan keuangan atau tidak dapat dimengerti.
    - Berikan "message" dalam bahasa Indonesia yang ramah dan membantu.
 
-Konteks tanggal hari ini: ${new Date().toISOString().split('T')[0]}.
+Konteks tanggal hari ini (WIB): ${new Date(Date.now() + WIB_OFFSET_MS).toISOString().split('T')[0]}.
 Kembalikan strictly structured JSON sesuai responseSchema.`;
+}
 
 export async function parseUserIntent(text: string): Promise<ParsedIntent> {
   const ai = getClient();
   const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const model = ai.getGenerativeModel({
     model: modelName,
-    systemInstruction: SYSTEM_INSTRUCTION,
+    systemInstruction: buildSystemInstruction(),
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -188,13 +192,20 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
       }
     }
 
+    // The schema marks `date` optional, so the model may return a non-ISO
+    // phrase ("kemarin") — drop anything that isn't YYYY-MM-DD or the sheet
+    // would receive an unparseable date cell.
+    if (typeof parsed?.date === 'string' && !/^\d{4}-\d{2}-\d{2}/.test(parsed.date.trim())) {
+      delete parsed.date;
+    }
+
     // Validate with Zod
     const validated = IntentSchema.safeParse(parsed);
     if (!validated.success) {
       console.warn('[Gemini] Schema validation failed:', validated.error.format(), 'raw:', rawJson);
       return {
         action: 'UNKNOWN',
-        message: 'Could not understand the transaction details. Please specify an amount and item, e.g., "spent $10 on lunch".',
+        message: 'Maaf, detail transaksinya belum bisa dipahami. Sebutkan nominal dan barangnya, misalnya "beli kopi 25rb".',
       };
     }
 
@@ -203,7 +214,7 @@ export async function parseUserIntent(text: string): Promise<ParsedIntent> {
     console.error('[Gemini] Error calling Gemini API:', error);
     return {
       action: 'UNKNOWN',
-      message: 'Sorry, I encountered an error analyzing your request. Please try again.',
+      message: 'Maaf, terjadi kesalahan saat menganalisis permintaan Anda. Silakan coba lagi.',
     };
   }
 }
